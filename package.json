@@ -1,0 +1,18 @@
+{
+  "name": "kurumi-voice-keeper-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that can join the requester's voice channel and stay muted.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.26.2",
+    "dotenv": "^17.4.1"
+  }
+}
