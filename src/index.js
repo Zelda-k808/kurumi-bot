@@ -34,7 +34,14 @@ if (process.env.DEBUG_BOT_ENV === "1") {
 
 function startKeepAliveHttp() {
   const rawPort = process.env.PORT;
-  if (!rawPort) return null;
+  if (!rawPort) {
+    if (process.env.RENDER) {
+      console.warn(
+        "PORT is not set (Render Web Services normally injects it). HTTP keep-alive is disabled."
+      );
+    }
+    return null;
+  }
 
   const port = Number.parseInt(rawPort, 10);
   if (!Number.isFinite(port) || port <= 0) {
@@ -68,6 +75,9 @@ function startKeepAliveHttp() {
 }
 
 startKeepAliveHttp();
+
+// Runs immediately after listen() registers; does not wait for the "listening" callback.
+console.log("Bootstrap: continuing to token check and Discord client…");
 
 const token = (process.env.DISCORD_TOKEN || "").trim();
 
