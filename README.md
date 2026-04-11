@@ -87,6 +87,23 @@ Check the **Logs** tab on the service:
 
 Render does **not** read a `.env` file from the repo for secrets; only dashboard (or blueprint) env vars count.
 
+### dotenv vs Render (why `DISCORD_TOKEN` can look “missing”)
+
+- On **Render**, `process.env.DISCORD_TOKEN` comes from the dashboard (or blueprint). There is usually **no** `.env` file in the container.
+- This app **does not** run `dotenv` when `RENDER` is set, so a stray or empty local `.env` in the image **cannot** clear your Render secret.
+- Standard `dotenv` also uses **`override: false`** locally, so an existing `DISCORD_TOKEN` in the environment is **never** overwritten by a file.
+
+**Safe debugging (never log the token):** add environment variable **`DEBUG_BOT_ENV=1`** on the service (temporarily). Logs will show whether `DISCORD_TOKEN` is defined and its **length** only — not the secret. Remove it after you finish debugging.
+
+**Do not** `console.log(process.env.DISCORD_TOKEN)`; anyone with log access can steal your bot.
+
+### Web Service vs Background Worker
+
+- **Web Service** (what this repo targets): you get a public URL so **UptimeRobot / cron-job.org** can **GET `/ping`** and reduce free-tier sleep. The HTTP server and the Discord client share one process.
+- **Background Worker**: no HTTP URL on Render for uptime pings; fine if you do not need external HTTP keep-alive.
+
+“Service looks live” on Render means the process bound **`PORT`** and passed health checks; always confirm **`Logged in as …`** in logs for Discord.
+
 ### Keep the service from sleeping (important)
 
 On Render’s **free** plan, the web service can **spin down** when it gets no HTTP traffic for a while. When it sleeps, the **whole Node process** stops, so the bot leaves Discord until the next request wakes it.

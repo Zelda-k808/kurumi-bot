@@ -1,4 +1,8 @@
-require("dotenv").config();
+// Render injects secrets into process.env before Node starts. Load a local `.env` only
+// when not running on Render, and never let a file override existing env keys.
+if (!process.env.RENDER) {
+  require("dotenv").config({ override: false });
+}
 
 const http = require("http");
 
@@ -16,6 +20,17 @@ const {
 } = require("@discordjs/voice");
 
 const guildConnections = new Map();
+
+if (process.env.DEBUG_BOT_ENV === "1") {
+  const raw = process.env.DISCORD_TOKEN;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  console.log(
+    "[DEBUG_BOT_ENV] RENDER=%s DISCORD_TOKEN_defined=%s DISCORD_TOKEN_length=%s",
+    Boolean(process.env.RENDER),
+    raw !== undefined && raw !== null,
+    trimmed.length
+  );
+}
 
 function startKeepAliveHttp() {
   const rawPort = process.env.PORT;
@@ -212,7 +227,15 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-client.login(token).catch((err) => {
-  console.error("Discord login failed. Token invalid, revoked, or network error:", err);
-  process.exit(1);
-});
+client
+  .login(token)
+  .then(() => {
+    console.log("Discord login: credentials accepted (waiting for ready event…)");
+  })
+  .catch((err) => {
+    console.error(
+      "Discord login failed (invalid/revoked token, intents, or network):",
+      err
+    );
+    process.exit(1);
+  });
