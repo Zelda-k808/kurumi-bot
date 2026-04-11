@@ -1,3 +1,6 @@
+# Optional Render Blueprint: Dashboard → New → Blueprint → connect this repo.
+# After first deploy, set DISCORD_TOKEN in the service Environment (secret).
+
 services:
   - type: web
     name: kurumi-voice-bot
@@ -6,5 +9,7 @@ services:
     buildCommand: npm install
     startCommand: npm start
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: DISCORD_TOKEN
         sync: false

@@ -50,14 +50,42 @@ Global slash commands may take a short time to appear after first startup.
 - `/status` -> shows connection state in that server
 - `/ping` -> Discord latency check (for fun/debug only)
 
-## 5) Host on Render.com (free web service)
+## 5) Deploy on Render.com
 
-1. Push this repo to GitHub (or connect Render to your repo).
-2. New **Web Service** → pick the repo.
-3. **Build command:** `npm install`  
-   **Start command:** `npm start`
-4. Add environment variable **`DISCORD_TOKEN`** (same value as in `.env`).
-5. Deploy. Render sets **`PORT`** automatically; the bot starts a tiny HTTP server on that port.
+Render runs this as a **Web Service**: Node binds to **`PORT`** (set by Render) and serves **GET /** and **GET /ping** with plain text `ok` so uptime monitors can hit your URL. The Discord bot runs in the same process.
+
+### Option A — Blueprint (`render.yaml`)
+
+1. Push this repo to GitHub (or GitLab / Bitbucket).
+2. In [Render Dashboard](https://dashboard.render.com): **New** → **Blueprint**.
+3. Connect the repository and select the branch. Render reads `render.yaml`.
+4. When prompted, add **`DISCORD_TOKEN`** (your bot token). Do not wrap it in quotes.
+5. Create / deploy. After the first deploy, confirm under the service **Environment** that `DISCORD_TOKEN` is present.
+
+### Option B — Web Service (manual)
+
+1. **New** → **Web Service** → connect the repo.
+2. **Runtime:** Node  
+   **Build command:** `npm install`  
+   **Start command:** `npm start`  
+   **Instance type:** Free (if you use the free plan).
+3. **Environment** → **Add environment variable**:
+   - Key: `DISCORD_TOKEN`  
+   - Value: paste the token from the Discord Developer Portal (no quotes).
+4. Optional but recommended: add **`NODE_VERSION`** = `20` so Render matches `package.json` (`>=18`).
+5. Deploy. Open the service URL in a browser; you should see `ok` on `/` or `/ping`.
+
+### Troubleshooting: “Exited with status 1”
+
+Check the **Logs** tab on the service:
+
+| Log message | What to do |
+|-------------|------------|
+| `Missing DISCORD_TOKEN` | Add **`DISCORD_TOKEN`** in Render **Environment** (exact name). Redeploy. |
+| `Discord login failed` | Token wrong, reset in Discord portal, or extra spaces — paste again without quotes. |
+| `HTTP keep-alive server error` / `EADDRINUSE` | Rare; redeploy or change service — usually a platform glitch. |
+
+Render does **not** read a `.env` file from the repo for secrets; only dashboard (or blueprint) env vars count.
 
 ### Keep the service from sleeping (important)
 
@@ -101,4 +129,4 @@ pm2 startup
 
 This gives near-true 24/7 on free tier.
 
-`render.yaml` in this repo is optional: you can connect the repo in Render and it may pick up the blueprint, or set build/start commands manually as above.
+The **`render.yaml`** in this repo is the optional blueprint for Option A above.

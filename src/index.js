@@ -15,10 +15,51 @@ const {
   VoiceConnectionStatus
 } = require("@discordjs/voice");
 
-const token = process.env.DISCORD_TOKEN;
+const guildConnections = new Map();
+
+function startKeepAliveHttp() {
+  const rawPort = process.env.PORT;
+  if (!rawPort) return null;
+
+  const port = Number.parseInt(rawPort, 10);
+  if (!Number.isFinite(port) || port <= 0) {
+    console.error(`Invalid PORT: ${JSON.stringify(rawPort)}`);
+    process.exit(1);
+  }
+
+  const server = http.createServer((req, res) => {
+    const path = req.url?.split("?")[0] ?? "/";
+    if (req.method === "GET" && (path === "/" || path === "/ping")) {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("ok");
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  server.on("error", (err) => {
+    console.error("HTTP keep-alive server error:", err);
+    process.exit(1);
+  });
+
+  server.listen(port, "0.0.0.0", () => {
+    console.log(
+      `HTTP keep-alive listening on 0.0.0.0:${port} (GET / and GET /ping → 200)`
+    );
+  });
+
+  return server;
+}
+
+startKeepAliveHttp();
+
+const token = (process.env.DISCORD_TOKEN || "").trim();
 
 if (!token) {
-  console.error("Missing DISCORD_TOKEN in .env");
+  console.error(
+    "Missing DISCORD_TOKEN. Locally: add it to .env. On Render: Environment → add variable DISCORD_TOKEN (no quotes)."
+  );
   process.exit(1);
 }
 
@@ -40,30 +81,6 @@ const commandData = [
     .setName("ping")
     .setDescription("Check bot latency (Discord only; does not wake Render).")
 ].map((cmd) => cmd.toJSON());
-
-const guildConnections = new Map();
-
-function startKeepAliveHttp() {
-  const port = process.env.PORT;
-  if (!port) return;
-
-  const server = http.createServer((req, res) => {
-    const path = req.url?.split("?")[0] ?? "/";
-    if (req.method === "GET" && (path === "/" || path === "/ping")) {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("ok");
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-
-  server.listen(Number(port), "0.0.0.0", () => {
-    console.log(`HTTP keep-alive on port ${port} — use GET / or /ping for uptime pings`);
-  });
-}
-
-startKeepAliveHttp();
 
 async function registerGlobalCommands(applicationId) {
   const rest = new REST({ version: "10" }).setToken(token);
@@ -164,15 +181,38 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "ping") {
-    const sent = await interaction.reply({
-      content: "Pinging…",
-      fetchReply: true
-    });
-    const roundTrip = sent.createdTimestamp - interaction.createdTimestamp;
-    await interaction.editReply(
-      `Pong. Round trip ~${roundTrip} ms · WebSocket ping ~${client.ws.ping} ms`
-    );
+    try {
+      const sent = await interaction.reply({
+        content: "Pinging…",
+        fetchReply: true
+      });
+      const roundTrip = sent.createdTimestamp - interaction.createdTimestamp;
+      const wsPing = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
+      await interaction.editReply(
+        `Pong. Round trip ~${roundTrip} ms · WebSocket ping ~${wsPing} ms`
+      );
+    } catch (err) {
+      console.error("/ping interaction error:", err);
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp({
+            content: "Could not complete /ping.",
+            ephemeral: true
+          });
+        } else {
+          await interaction.reply({
+            content: "Could not complete /ping.",
+            ephemeral: true
+          });
+        }
+      } catch (_) {
+        // Ignore secondary failures.
+      }
+    }
   }
 });
 
-client.login(token);
+client.login(token).catch((err) => {
+  console.error("Discord login failed. Token invalid, revoked, or network error:", err);
+  process.exit(1);
+});
