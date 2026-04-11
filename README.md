@@ -48,8 +48,29 @@ Global slash commands may take a short time to appear after first startup.
 - `/join` -> bot joins your current voice channel and self-mutes
 - `/leave` -> bot leaves channel in that server
 - `/status` -> shows connection state in that server
+- `/ping` -> Discord latency check (for fun/debug only)
 
-## 5) Free 24/7 hosting (realistic options)
+## 5) Host on Render.com (free web service)
+
+1. Push this repo to GitHub (or connect Render to your repo).
+2. New **Web Service** → pick the repo.
+3. **Build command:** `npm install`  
+   **Start command:** `npm start`
+4. Add environment variable **`DISCORD_TOKEN`** (same value as in `.env`).
+5. Deploy. Render sets **`PORT`** automatically; the bot starts a tiny HTTP server on that port.
+
+### Keep the service from sleeping (important)
+
+On Render’s **free** plan, the web service can **spin down** when it gets no HTTP traffic for a while. When it sleeps, the **whole Node process** stops, so the bot leaves Discord until the next request wakes it.
+
+**What actually keeps Render awake:** something on the internet must **HTTP GET** your app regularly, for example:
+
+- `https://YOUR-SERVICE.onrender.com/ping`  
+- or `https://YOUR-SERVICE.onrender.com/`
+
+Use a free uptime monitor (e.g. [UptimeRobot](https://uptimerobot.com/) or [cron-job.org](https://cron-job.org)) and ping that URL every **5–14 minutes**. The Discord `/ping` command does **not** hit Render; only HTTP pings do.
+
+## 6) Free 24/7 hosting (realistic options)
 
 Truly free and always-on hosting is limited. Best practical options:
 
@@ -79,3 +100,5 @@ pm2 startup
 ```
 
 This gives near-true 24/7 on free tier.
+
+`render.yaml` in this repo is optional: you can connect the repo in Render and it may pick up the blueprint, or set build/start commands manually as above.

@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const http = require("http");
+
 const {
   Client,
   GatewayIntentBits,
@@ -33,10 +35,35 @@ const commandData = [
     .setDescription("Leave the current voice channel."),
   new SlashCommandBuilder()
     .setName("status")
-    .setDescription("Check if the bot is connected in this server.")
+    .setDescription("Check if the bot is connected in this server."),
+  new SlashCommandBuilder()
+    .setName("ping")
+    .setDescription("Check bot latency (Discord only; does not wake Render).")
 ].map((cmd) => cmd.toJSON());
 
 const guildConnections = new Map();
+
+function startKeepAliveHttp() {
+  const port = process.env.PORT;
+  if (!port) return;
+
+  const server = http.createServer((req, res) => {
+    const path = req.url?.split("?")[0] ?? "/";
+    if (req.method === "GET" && (path === "/" || path === "/ping")) {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("ok");
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  server.listen(Number(port), "0.0.0.0", () => {
+    console.log(`HTTP keep-alive on port ${port} — use GET / or /ping for uptime pings`);
+  });
+}
+
+startKeepAliveHttp();
 
 async function registerGlobalCommands(applicationId) {
   const rest = new REST({ version: "10" }).setToken(token);
@@ -133,6 +160,18 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     await interaction.reply("I am connected and muted in this server.");
+    return;
+  }
+
+  if (interaction.commandName === "ping") {
+    const sent = await interaction.reply({
+      content: "Pinging…",
+      fetchReply: true
+    });
+    const roundTrip = sent.createdTimestamp - interaction.createdTimestamp;
+    await interaction.editReply(
+      `Pong. Round trip ~${roundTrip} ms · WebSocket ping ~${client.ws.ping} ms`
+    );
   }
 });
 
