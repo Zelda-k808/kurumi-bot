@@ -4,6 +4,14 @@ if (!process.env.RENDER) {
   require("dotenv").config({ override: false });
 }
 
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+});
+
 const http = require("http");
 
 const {
@@ -77,7 +85,7 @@ function startKeepAliveHttp() {
 startKeepAliveHttp();
 
 // Runs immediately after listen() registers; does not wait for the "listening" callback.
-console.log("Bootstrap: continuing to token check and Discord client…");
+console.log("STEP: before token");
 
 const token = (process.env.DISCORD_TOKEN || "").trim();
 
@@ -87,6 +95,8 @@ if (!token) {
   );
   process.exit(1);
 }
+
+console.log("STEP: token length =", token.length);
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
@@ -236,6 +246,8 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 });
+
+console.log("STEP: before login");
 
 client
   .login(token)

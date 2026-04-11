@@ -8,7 +8,7 @@
     "start": "node src/index.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
