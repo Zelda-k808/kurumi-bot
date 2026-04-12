@@ -169,15 +169,18 @@ async function connectMuted(interaction) {
 
 async function handlePing(interaction) {
   try {
-    const sent = await interaction.reply({ content: "Pinging…", fetchReply: true });
-    const rt = sent.createdTimestamp - interaction.createdTimestamp;
+    // ACK within Discord’s ~3s window (cold Render / queue lag → 10062 if we only reply() late).
+    await interaction.deferReply();
+    const ackMs = Date.now() - interaction.createdTimestamp;
     const ws = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
-    await interaction.editReply(`Pong. Round trip ~${rt} ms · WebSocket ping ~${ws} ms`);
+    await interaction.editReply(
+      `Pong. Ack ~${ackMs} ms · WebSocket ping ~${ws} ms`
+    );
   } catch (err) {
     console.error("/ping:", err);
     const body = { content: "Could not complete /ping.", ephemeral: true };
     try {
-      await (interaction.replied || interaction.deferred
+      await (interaction.deferred || interaction.replied
         ? interaction.followUp(body)
         : interaction.reply(body));
     } catch (_) {}
