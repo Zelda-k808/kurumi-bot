@@ -20,6 +20,7 @@ const {
   VoiceConnectionStatus
 } = require("@discordjs/voice");
 const wordle = require("./wordle");
+const { parseKurumiLine, KURUMI_HELP } = require("./kurumi-text");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -85,7 +86,12 @@ if (!token) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 const commandData = [
@@ -227,32 +233,56 @@ function startVoiceHealthLoop() {
   }, VOICE_HEALTH_INTERVAL_MS);
 }
 
-async function connectMuted(interaction) {
-  const memberChannel = interaction.member?.voice?.channel;
+/** @param {import("discord.js").GuildMember | null | undefined} member */
+async function voiceJoinFromMember(member) {
+  const memberChannel = member?.voice?.channel;
   if (!memberChannel) {
-    await interaction.reply({
-      content: "Join a voice channel first, then run `/join`.",
-      ephemeral: true
-    });
-    return;
+    return {
+      ok: false,
+      text: "Join a voice channel first, then run **`/join`** or say **`kurumi join`**."
+    };
   }
 
-  guildVoiceTargets.set(interaction.guildId, memberChannel.id);
+  const guildId = member.guild.id;
+  guildVoiceTargets.set(guildId, memberChannel.id);
 
   try {
-    await establishMutedConnection(interaction.guildId, memberChannel.id);
+    await establishMutedConnection(guildId, memberChannel.id);
   } catch (err) {
-    guildVoiceTargets.delete(interaction.guildId);
-    guildConnections.delete(interaction.guildId);
+    guildVoiceTargets.delete(guildId);
+    guildConnections.delete(guildId);
     console.error("[voice] join failed:", err);
-    await interaction.reply({
-      content: "Could not join voice (permissions, channel, or network). Try again.",
-      ephemeral: true
-    });
-    return;
+    return {
+      ok: false,
+      text: "Could not join voice (permissions, channel, or network). Try again."
+    };
   }
 
-  await interaction.reply(`Joined **${memberChannel.name}** and staying muted.`);
+  return { ok: true, text: `Joined **${memberChannel.name}** and staying muted.` };
+}
+
+function voiceLeaveGuild(guildId) {
+  const c = guildConnections.get(guildId);
+  if (!c) {
+    return { ok: false, text: "I am not in a voice channel in this server." };
+  }
+  guildVoiceTargets.delete(guildId);
+  c.destroy();
+  guildConnections.delete(guildId);
+  return { ok: true, text: "Left the voice channel." };
+}
+
+function voiceStatusText(guildId) {
+  const c = guildConnections.get(guildId);
+  return c ? "I am connected and muted in this server." : "I am not connected in this server.";
+}
+
+async function connectMuted(interaction) {
+  const r = await voiceJoinFromMember(interaction.member);
+  await interaction.reply({
+    content: r.text,
+    ephemeral: !r.ok
+  });
 }
 
 async function handlePing(interaction) {
@@ -280,10 +310,93 @@ client.once("ready", async () => {
     const { mode, count } = await propagateSlashCommands(client.user.id);
     const where = mode === "guild" ? `guild ×${count}` : "global";
     console.log(`Logged in as ${client.user.tag} · slash commands: ${where}`);
+    console.log(
+      "Text: messages starting with **kurumi** — enable **Message Content Intent** (Bot tab) in the Developer Portal."
+    );
   } catch (err) {
     console.error("Command registration failed:", err);
   }
   startVoiceHealthLoop();
+});
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+
+  const parsed = parseKurumiLine(message.content);
+  if (!parsed) return;
+
+  const replyOpts = { allowedMentions: { repliedUser: false } };
+
+  try {
+    if (parsed.type === "help") {
+      await message.reply({ content: KURUMI_HELP, ...replyOpts });
+      return;
+    }
+
+    if (parsed.type === "unknown") {
+      await message.reply({ content: parsed.text || KURUMI_HELP, ...replyOpts });
+      return;
+    }
+
+    if (parsed.type === "voice") {
+      if (parsed.cmd === "join") {
+        let member = message.member;
+        if (!member) {
+          try {
+            member = await message.guild.members.fetch(message.author.id);
+          } catch (_) {
+            await message.reply({
+              content: "Could not load your member profile. Try again from this server.",
+              ...replyOpts
+            });
+            return;
+          }
+        }
+        const r = await voiceJoinFromMember(member);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.cmd === "leave") {
+        const r = voiceLeaveGuild(message.guild.id);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.cmd === "status") {
+        await message.reply({ content: voiceStatusText(message.guild.id), ...replyOpts });
+        return;
+      }
+      if (parsed.cmd === "ping") {
+        const ws = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
+        const rt = Date.now() - message.createdTimestamp;
+        await message.reply({
+          content: `Pong. Round trip ~${rt} ms · WebSocket ping ~${ws} ms`,
+          ...replyOpts
+        });
+        return;
+      }
+    }
+
+    if (parsed.type === "wordle") {
+      const uid = message.author.id;
+      if (parsed.sub === "new") {
+        const r = wordle.startNewGame(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.sub === "status") {
+        const r = wordle.getStatus(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.sub === "guess") {
+        const r = wordle.submitGuess(uid, parsed.word);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("[kurumi text]", err);
+  }
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -294,25 +407,12 @@ client.on("interactionCreate", async (interaction) => {
       await connectMuted(interaction);
       return;
     case "leave": {
-      const c = guildConnections.get(interaction.guildId);
-      if (!c) {
-        await interaction.reply({
-          content: "I am not in a voice channel in this server.",
-          ephemeral: true
-        });
-        return;
-      }
-      guildVoiceTargets.delete(interaction.guildId);
-      c.destroy();
-      guildConnections.delete(interaction.guildId);
-      await interaction.reply("Left the voice channel.");
+      const r = voiceLeaveGuild(interaction.guildId);
+      await interaction.reply({ content: r.text, ephemeral: !r.ok });
       return;
     }
     case "status": {
-      const c = guildConnections.get(interaction.guildId);
-      await interaction.reply(
-        c ? "I am connected and muted in this server." : "I am not connected in this server."
-      );
+      await interaction.reply(voiceStatusText(interaction.guildId));
       return;
     }
     case "ping":
