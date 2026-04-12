@@ -12,7 +12,9 @@ const {
   GatewayIntentBits,
   SlashCommandBuilder,
   REST,
-  Routes
+  Routes,
+  ChannelType,
+  PermissionFlagsBits
 } = require("discord.js");
 const {
   joinVoiceChannel,
@@ -21,6 +23,9 @@ const {
 } = require("@discordjs/voice");
 const wordle = require("./wordle");
 const { parseKurumiLine, KURUMI_HELP } = require("./kurumi-text");
+const persona = require("./kurumi-persona");
+const { formatDateTimeInZone } = require("./time-util");
+const dailyWordle = require("./daily-wordle");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -126,7 +131,47 @@ const commandData = [
             .setMaxLength(5)
         )
     )
-    .addSubcommand((s) => s.setName("status").setDescription("Show your current board."))
+    .addSubcommand((s) => s.setName("status").setDescription("Show your current board.")),
+  new SlashCommandBuilder()
+    .setName("dailywordle")
+    .setDescription("Server daily Wordle: 8:00 post + one shared word per day.")
+    .addSubcommand((s) =>
+      s
+        .setName("setup")
+        .setDescription("Post the daily puzzle every day at 8:00 in this channel (Manage Server).")
+        .addChannelOption((o) =>
+          o
+            .setName("channel")
+            .setDescription("Channel for the morning announcement")
+            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+            .setRequired(true)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("timezone")
+            .setDescription("IANA timezone, e.g. America/New_York, Asia/Tokyo (default UTC)")
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("guess")
+        .setDescription("Guess today's shared daily word (same for everyone in this server).")
+        .addStringOption((o) =>
+          o
+            .setName("word")
+            .setDescription("Five letters")
+            .setRequired(true)
+            .setMinLength(5)
+            .setMaxLength(5)
+        )
+    )
+    .addSubcommand((s) => s.setName("status").setDescription("Your board for today's daily Wordle."))
+    .addSubcommand((s) =>
+      s
+        .setName("stop")
+        .setDescription("Stop daily posts for this server (Manage Server).")
+    )
 ].map((c) => c.toJSON());
 
 function parseGuildIds(raw) {
@@ -317,6 +362,10 @@ client.once("ready", async () => {
     console.error("Command registration failed:", err);
   }
   startVoiceHealthLoop();
+  setInterval(() => {
+    dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] tick", e));
+  }, 60_000);
+  dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] initial tick", e));
 });
 
 client.on("messageCreate", async (message) => {
@@ -326,15 +375,22 @@ client.on("messageCreate", async (message) => {
   if (!parsed) return;
 
   const replyOpts = { allowedMentions: { repliedUser: false } };
+  const sch = dailyWordle.getSchedule(message.guild.id);
+  const timeLine = formatDateTimeInZone(new Date(), sch?.timezone || "UTC");
 
   try {
+    if (parsed.type === "yes_master") {
+      await message.reply({ content: persona.YES_MASTER, ...replyOpts });
+      return;
+    }
+
     if (parsed.type === "help") {
       await message.reply({ content: KURUMI_HELP, ...replyOpts });
       return;
     }
 
-    if (parsed.type === "unknown") {
-      await message.reply({ content: parsed.text || KURUMI_HELP, ...replyOpts });
+    if (parsed.type === "unknown_command") {
+      await message.reply({ content: persona.UNKNOWN_COMMAND, ...replyOpts });
       return;
     }
 
@@ -394,6 +450,29 @@ client.on("messageCreate", async (message) => {
         return;
       }
     }
+
+    if (parsed.type === "daily") {
+      const gid = message.guild.id;
+      const uid = message.author.id;
+      if (parsed.sub === "status") {
+        await message.reply({
+          content: dailyWordle.dailyStatus(gid, uid),
+          ...replyOpts
+        });
+        return;
+      }
+      if (parsed.sub === "guess") {
+        const r = dailyWordle.submitDailyGuess(gid, uid, parsed.word);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+    }
+
+    if (parsed.type === "chat") {
+      const line = persona.chatReply(parsed.text, { timeLine });
+      await message.reply({ content: line, ...replyOpts });
+      return;
+    }
   } catch (err) {
     console.error("[kurumi text]", err);
   }
@@ -435,6 +514,70 @@ client.on("interactionCreate", async (interaction) => {
         const w = interaction.options.getString("word", true);
         const r = wordle.submitGuess(uid, w);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      return;
+    }
+    case "dailywordle": {
+      if (!interaction.guild) {
+        await interaction.reply({ content: "Daily Wordle works in servers only, Master.", ephemeral: true });
+        return;
+      }
+      const gid = interaction.guild.id;
+      const uid = interaction.user.id;
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "setup") {
+        if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+          await interaction.reply({
+            content: "Only members with **Manage Server** may configure the daily, Master.",
+            ephemeral: true
+          });
+          return;
+        }
+        const ch = interaction.options.getChannel("channel", true);
+        const tzRaw = interaction.options.getString("timezone");
+        try {
+          dailyWordle.setSchedule(gid, ch.id, tzRaw || undefined);
+        } catch (e) {
+          await interaction.reply({
+            content: String(e.message || e),
+            ephemeral: true
+          });
+          return;
+        }
+        await interaction.reply({
+          content: `Daily Wordle will post in ${ch} at **8:00** each day (**${tzRaw?.trim() || dailyWordle.DEFAULT_TZ}**).`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (sub === "stop") {
+        if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+          await interaction.reply({
+            content: "Only members with **Manage Server** may stop the daily, Master.",
+            ephemeral: true
+          });
+          return;
+        }
+        dailyWordle.clearSchedule(gid);
+        await interaction.reply({ content: "Daily Wordle scheduling cleared for this server.", ephemeral: true });
+        return;
+      }
+
+      if (sub === "guess") {
+        const w = interaction.options.getString("word", true);
+        const r = dailyWordle.submitDailyGuess(gid, uid, w);
+        await interaction.reply({ content: r.text, ephemeral: true });
+        return;
+      }
+
+      if (sub === "status") {
+        await interaction.reply({
+          content: dailyWordle.dailyStatus(gid, uid),
+          ephemeral: true
+        });
         return;
       }
       return;

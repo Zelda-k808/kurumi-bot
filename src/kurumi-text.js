@@ -1,10 +1,14 @@
 /** Match "kurumi" wake word (any letter casing), then a command. */
 const WAKE = /^kurumi\b\s*(.*)$/is;
 
+const VOICE = new Set(["join", "leave", "status", "ping"]);
+
 const KURUMI_HELP =
   "**Kurumi text commands** (message must **start** with `kurumi` — any caps):\n" +
-  "`kurumi join` · `kurumi leave` · `kurumi status` · `kurumi ping`\n" +
-  "`kurumi wordle new` · `kurumi wordle guess <word>` · `kurumi wordle status`";
+  "`kurumi` alone · `kurumi join` · `kurumi leave` · `kurumi status` · `kurumi ping`\n" +
+  "`kurumi wordle new` · `kurumi wordle guess <word>` · `kurumi wordle status`\n" +
+  "`kurumi daily guess <word>` · `kurumi daily status` · chat: **`kurumi hi`** etc.\n" +
+  "`kurumi help` — this list";
 
 /**
  * @param {string} content
@@ -15,7 +19,10 @@ function parseKurumiLine(content) {
   if (!m) return null;
 
   const rest = m[1].trim();
-  if (!rest) return { type: "help" };
+
+  if (!rest) return { type: "yes_master" };
+
+  if (/^help$/i.test(rest)) return { type: "help" };
 
   const tokens = rest.split(/\s+/).filter(Boolean);
   const head = tokens[0].toLowerCase();
@@ -27,25 +34,38 @@ function parseKurumiLine(content) {
     if (sub === "guess" && tokens.length === 3) {
       const word = tokens[2].toLowerCase().replace(/[^a-z]/g, "");
       if (word.length === 5) return { type: "wordle", sub: "guess", word };
-      return {
-        type: "unknown",
-        text: "Guess must be **one** 5-letter word (letters only), e.g. **`kurumi wordle guess slate`**."
-      };
     }
-    return {
-      type: "unknown",
-      text: "Wordle: **`kurumi wordle new`** · **`kurumi wordle guess crate`** · **`kurumi wordle status`**"
-    };
+    return { type: "unknown_command" };
   }
 
-  if (tokens.length === 1 && ["join", "leave", "status", "ping"].includes(head)) {
+  if (head === "daily") {
+    const sub = (tokens[1] || "").toLowerCase();
+    if (sub === "status" && tokens.length === 2) return { type: "daily", sub: "status" };
+    if (sub === "guess" && tokens.length === 3) {
+      const word = tokens[2].toLowerCase().replace(/[^a-z]/g, "");
+      if (word.length === 5) return { type: "daily", sub: "guess", word };
+    }
+    return { type: "unknown_command" };
+  }
+
+  if (tokens.length === 1 && VOICE.has(head)) {
     return { type: "voice", cmd: head };
   }
 
-  return {
-    type: "unknown",
-    text: `Unknown command. ${KURUMI_HELP}`
-  };
+  if (
+    tokens.length === 1 &&
+    /^[a-z]+$/i.test(head) &&
+    head.length >= 2 &&
+    !VOICE.has(head) &&
+    head !== "wordle" &&
+    head !== "daily" &&
+    head !== "help" &&
+    !/^(hi|hey|hello|yo|sup|gm|gn|morning|bye|goodbye|cya|thanks|thank|thx)$/i.test(head)
+  ) {
+    return { type: "unknown_command" };
+  }
+
+  return { type: "chat", text: rest };
 }
 
 module.exports = { parseKurumiLine, KURUMI_HELP };

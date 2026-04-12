@@ -143,4 +143,13 @@ function submitGuess(userId, raw) {
   };
 }
 
-module.exports = { startNewGame, getStatus, submitGuess };
+module.exports = {
+  startNewGame,
+  getStatus,
+  submitGuess,
+  MAX_GUESSES,
+  gradeGuess,
+  gradeToEmojis,
+  isValidWord: (w) => WORD_SET.has(w),
+  pickRandomAnswer: randomAnswer
+};
