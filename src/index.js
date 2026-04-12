@@ -99,10 +99,15 @@ const commandData = [
 
 function parseGuildIds(raw) {
   if (!raw || typeof raw !== "string") return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => /^\d{17,20}$/.test(s));
+  const seen = new Set();
+  const out = [];
+  for (const s of raw.split(",").map((x) => x.trim())) {
+    if (/^\d{17,20}$/.test(s) && !seen.has(s)) {
+      seen.add(s);
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 async function propagateSlashCommands(applicationId) {
@@ -110,6 +115,8 @@ async function propagateSlashCommands(applicationId) {
   const guildIds = parseGuildIds(process.env.DISCORD_GUILD_ID || "");
 
   if (guildIds.length > 0) {
+    // Guild + global both register the same names → Discord shows duplicates. Keep guild only.
+    await rest.put(Routes.applicationCommands(applicationId), { body: [] });
     await Promise.all(
       guildIds.map((guildId) =>
         rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
