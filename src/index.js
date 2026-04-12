@@ -19,6 +19,7 @@ const {
   entersState,
   VoiceConnectionStatus
 } = require("@discordjs/voice");
+const wordle = require("./wordle");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -99,7 +100,27 @@ const commandData = [
     .setDescription("Check if the bot is connected in this server."),
   new SlashCommandBuilder()
     .setName("ping")
-    .setDescription("Check bot latency (Discord only; does not wake Render).")
+    .setDescription("Check bot latency (Discord only; does not wake Render)."),
+  new SlashCommandBuilder()
+    .setName("wordle")
+    .setDescription("Play Wordle (5 letters, 6 guesses, private board).")
+    .addSubcommand((s) =>
+      s.setName("new").setDescription("Start a new game (replaces your current game).")
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("guess")
+        .setDescription("Submit a 5-letter guess.")
+        .addStringOption((o) =>
+          o
+            .setName("word")
+            .setDescription("Five letters (a–z)")
+            .setRequired(true)
+            .setMinLength(5)
+            .setMaxLength(5)
+        )
+    )
+    .addSubcommand((s) => s.setName("status").setDescription("Show your current board."))
 ].map((c) => c.toJSON());
 
 function parseGuildIds(raw) {
@@ -297,6 +318,27 @@ client.on("interactionCreate", async (interaction) => {
     case "ping":
       await handlePing(interaction);
       return;
+    case "wordle": {
+      const uid = interaction.user.id;
+      const sub = interaction.options.getSubcommand();
+      if (sub === "new") {
+        const r = wordle.startNewGame(uid);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "status") {
+        const r = wordle.getStatus(uid);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "guess") {
+        const w = interaction.options.getString("word", true);
+        const r = wordle.submitGuess(uid, w);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      return;
+    }
     default:
   }
 });
