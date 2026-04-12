@@ -117,9 +117,31 @@ const commandData = [
     .setDescription("Check bot latency (Discord only; does not wake Render).")
 ].map((cmd) => cmd.toJSON());
 
-async function registerGlobalCommands(applicationId) {
+function parseGuildIds(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^\d{17,20}$/.test(s));
+}
+
+/** Register slash commands globally, or per-guild when DISCORD_GUILD_ID is set (comma-separated). */
+async function propagateSlashCommands(applicationId) {
   const rest = new REST({ version: "10" }).setToken(token);
+  const guildIds = parseGuildIds(process.env.DISCORD_GUILD_ID || "");
+
+  if (guildIds.length > 0) {
+    for (const guildId of guildIds) {
+      await rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
+        body: commandData
+      });
+      console.log(`Slash commands propagated to guild ${guildId}.`);
+    }
+    return { mode: "guild", count: guildIds.length };
+  }
+
   await rest.put(Routes.applicationCommands(applicationId), { body: commandData });
+  return { mode: "global", count: 0 };
 }
 
 async function connectMuted(interaction) {
@@ -172,9 +194,17 @@ async function connectMuted(interaction) {
 
 client.once("ready", async () => {
   try {
-    await registerGlobalCommands(client.user.id);
+    const result = await propagateSlashCommands(client.user.id);
     console.log(`Logged in as ${client.user.tag}`);
-    console.log("Slash commands are registered globally.");
+    if (result.mode === "guild") {
+      console.log(
+        `Slash commands are guild-scoped (${result.count} server(s)); set DISCORD_GUILD_ID to change targets.`
+      );
+    } else {
+      console.log(
+        "Slash commands are registered globally (set DISCORD_GUILD_ID for instant per-server updates)."
+      );
+    }
   } catch (err) {
     console.error("Failed to register commands:", err);
   }
