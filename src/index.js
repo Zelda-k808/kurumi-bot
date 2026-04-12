@@ -21,6 +21,11 @@ const {
 } = require("@discordjs/voice");
 
 const guildConnections = new Map();
+/** guildId → voice channel id to rejoin after drops (cleared on /leave). */
+const guildVoiceTargets = new Map();
+
+const VOICE_RECOVERY_MS = 120_000;
+const VOICE_HEALTH_INTERVAL_MS = 4 * 60 * 1000;
 
 if (process.env.DEBUG_BOT_ENV === "1") {
   const t = typeof process.env.DISCORD_TOKEN === "string" ? process.env.DISCORD_TOKEN.trim() : "";
@@ -131,6 +136,76 @@ async function propagateSlashCommands(applicationId) {
   return { mode: "global", count: 0 };
 }
 
+function bindVoiceRecovery(connection, guildId) {
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    const channelId = guildVoiceTargets.get(guildId);
+    if (!channelId) return;
+
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, VOICE_RECOVERY_MS),
+        entersState(connection, VoiceConnectionStatus.Connecting, VOICE_RECOVERY_MS),
+        entersState(connection, VoiceConnectionStatus.Ready, VOICE_RECOVERY_MS)
+      ]);
+    } catch (_) {
+      console.warn(`[voice] guild ${guildId} did not recover in time; rejoining…`);
+      try {
+        await establishMutedConnection(guildId, channelId);
+      } catch (err) {
+        console.error("[voice] rejoin failed:", err);
+        guildVoiceTargets.delete(guildId);
+        guildConnections.delete(guildId);
+      }
+    }
+  });
+}
+
+async function establishMutedConnection(guildId, channelId) {
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild) throw new Error("guild not in cache");
+
+  let vc = guild.channels.cache.get(channelId);
+  if (!vc) {
+    vc = await guild.channels.fetch(channelId).catch(() => null);
+  }
+  if (!vc || !vc.isVoiceBased()) throw new Error("voice channel unavailable");
+
+  const existing = guildConnections.get(guildId);
+  if (existing) {
+    try {
+      existing.destroy();
+    } catch (_) {}
+    guildConnections.delete(guildId);
+  }
+
+  const connection = joinVoiceChannel({
+    channelId: vc.id,
+    guildId,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfMute: true,
+    selfDeaf: false
+  });
+
+  guildConnections.set(guildId, connection);
+  bindVoiceRecovery(connection, guildId);
+  return connection;
+}
+
+function startVoiceHealthLoop() {
+  setInterval(() => {
+    for (const [guildId, connection] of guildConnections) {
+      const channelId = guildVoiceTargets.get(guildId);
+      if (!channelId) continue;
+      // Only fix “zombie” map entries; Disconnected is handled by bindVoiceRecovery (long timeout + rejoin).
+      if (connection.state.status === VoiceConnectionStatus.Destroyed) {
+        establishMutedConnection(guildId, channelId).catch((err) => {
+          console.error("[voice] health rejoin:", err);
+        });
+      }
+    }
+  }, VOICE_HEALTH_INTERVAL_MS);
+}
+
 async function connectMuted(interaction) {
   const memberChannel = interaction.member?.voice?.channel;
   if (!memberChannel) {
@@ -141,35 +216,20 @@ async function connectMuted(interaction) {
     return;
   }
 
-  const existing = guildConnections.get(interaction.guildId);
-  if (existing) {
-    try {
-      existing.destroy();
-    } catch (_) {}
+  guildVoiceTargets.set(interaction.guildId, memberChannel.id);
+
+  try {
+    await establishMutedConnection(interaction.guildId, memberChannel.id);
+  } catch (err) {
+    guildVoiceTargets.delete(interaction.guildId);
     guildConnections.delete(interaction.guildId);
+    console.error("[voice] join failed:", err);
+    await interaction.reply({
+      content: "Could not join voice (permissions, channel, or network). Try again.",
+      ephemeral: true
+    });
+    return;
   }
-
-  const connection = joinVoiceChannel({
-    channelId: memberChannel.id,
-    guildId: interaction.guildId,
-    adapterCreator: interaction.guild.voiceAdapterCreator,
-    selfMute: true,
-    selfDeaf: false
-  });
-
-  guildConnections.set(interaction.guildId, connection);
-
-  connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    try {
-      await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
-      ]);
-    } catch (_) {
-      connection.destroy();
-      guildConnections.delete(interaction.guildId);
-    }
-  });
 
   await interaction.reply(`Joined **${memberChannel.name}** and staying muted.`);
 }
@@ -202,6 +262,7 @@ client.once("ready", async () => {
   } catch (err) {
     console.error("Command registration failed:", err);
   }
+  startVoiceHealthLoop();
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -220,6 +281,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       }
+      guildVoiceTargets.delete(interaction.guildId);
       c.destroy();
       guildConnections.delete(interaction.guildId);
       await interaction.reply("Left the voice channel.");
