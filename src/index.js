@@ -1,19 +1,12 @@
-// Render injects secrets into process.env before Node starts. Load a local `.env` only
-// when not running on Render, and never let a file override existing env keys.
+// Local `.env` only when not on Render; never override existing env keys.
 if (!process.env.RENDER) {
   require("dotenv").config({ override: false });
 }
 
-process.on("uncaughtException", (err) => {
-  console.error("UNCAUGHT EXCEPTION:", err);
-});
-
-process.on("unhandledRejection", (reason) => {
-  console.error("UNHANDLED REJECTION:", reason);
-});
+process.on("uncaughtException", (err) => console.error("uncaughtException:", err));
+process.on("unhandledRejection", (reason) => console.error("unhandledRejection:", reason));
 
 const http = require("http");
-
 const {
   Client,
   GatewayIntentBits,
@@ -30,13 +23,11 @@ const {
 const guildConnections = new Map();
 
 if (process.env.DEBUG_BOT_ENV === "1") {
-  const raw = process.env.DISCORD_TOKEN;
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  const t = typeof process.env.DISCORD_TOKEN === "string" ? process.env.DISCORD_TOKEN.trim() : "";
   console.log(
-    "[DEBUG_BOT_ENV] RENDER=%s DISCORD_TOKEN_defined=%s DISCORD_TOKEN_length=%s",
+    "[DEBUG_BOT_ENV] RENDER=%s token_len=%s",
     Boolean(process.env.RENDER),
-    raw !== undefined && raw !== null,
-    trimmed.length
+    t.length
   );
 }
 
@@ -44,16 +35,14 @@ function startKeepAliveHttp() {
   const rawPort = process.env.PORT;
   if (!rawPort) {
     if (process.env.RENDER) {
-      console.warn(
-        "PORT is not set (Render Web Services normally injects it). HTTP keep-alive is disabled."
-      );
+      console.warn("PORT unset; HTTP keep-alive disabled.");
     }
     return null;
   }
 
   const port = Number.parseInt(rawPort, 10);
   if (!Number.isFinite(port) || port <= 0) {
-    console.error(`Invalid PORT: ${JSON.stringify(rawPort)}`);
+    console.error("Invalid PORT:", JSON.stringify(rawPort));
     process.exit(1);
   }
 
@@ -64,19 +53,16 @@ function startKeepAliveHttp() {
       res.end("ok");
       return;
     }
-    res.writeHead(404);
-    res.end();
+    res.writeHead(404).end();
   });
 
   server.on("error", (err) => {
-    console.error("HTTP keep-alive server error:", err);
+    console.error("HTTP server error:", err);
     process.exit(1);
   });
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(
-      `HTTP keep-alive listening on 0.0.0.0:${port} (GET / and GET /ping → 200)`
-    );
+    console.log(`HTTP keep-alive 0.0.0.0:${port} (GET / /ping)`);
   });
 
   return server;
@@ -84,19 +70,13 @@ function startKeepAliveHttp() {
 
 startKeepAliveHttp();
 
-// Runs immediately after listen() registers; does not wait for the "listening" callback.
-console.log("STEP: before token");
-
 const token = (process.env.DISCORD_TOKEN || "").trim();
-
 if (!token) {
   console.error(
-    "Missing DISCORD_TOKEN. Locally: add it to .env. On Render: Environment → add variable DISCORD_TOKEN (no quotes)."
+    "Missing DISCORD_TOKEN (Render: Environment → variable, no quotes; local: .env)."
   );
   process.exit(1);
 }
-
-console.log("STEP: token length =", token.length);
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
@@ -115,7 +95,7 @@ const commandData = [
   new SlashCommandBuilder()
     .setName("ping")
     .setDescription("Check bot latency (Discord only; does not wake Render).")
-].map((cmd) => cmd.toJSON());
+].map((c) => c.toJSON());
 
 function parseGuildIds(raw) {
   if (!raw || typeof raw !== "string") return [];
@@ -125,18 +105,18 @@ function parseGuildIds(raw) {
     .filter((s) => /^\d{17,20}$/.test(s));
 }
 
-/** Register slash commands globally, or per-guild when DISCORD_GUILD_ID is set (comma-separated). */
 async function propagateSlashCommands(applicationId) {
   const rest = new REST({ version: "10" }).setToken(token);
   const guildIds = parseGuildIds(process.env.DISCORD_GUILD_ID || "");
 
   if (guildIds.length > 0) {
-    for (const guildId of guildIds) {
-      await rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
-        body: commandData
-      });
-      console.log(`Slash commands propagated to guild ${guildId}.`);
-    }
+    await Promise.all(
+      guildIds.map((guildId) =>
+        rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
+          body: commandData
+        })
+      )
+    );
     return { mode: "guild", count: guildIds.length };
   }
 
@@ -146,7 +126,6 @@ async function propagateSlashCommands(applicationId) {
 
 async function connectMuted(interaction) {
   const memberChannel = interaction.member?.voice?.channel;
-
   if (!memberChannel) {
     await interaction.reply({
       content: "Join a voice channel first, then run `/join`.",
@@ -159,9 +138,7 @@ async function connectMuted(interaction) {
   if (existing) {
     try {
       existing.destroy();
-    } catch (_) {
-      // Ignore destroy errors for stale connections.
-    }
+    } catch (_) {}
     guildConnections.delete(interaction.guildId);
   }
 
@@ -187,107 +164,72 @@ async function connectMuted(interaction) {
     }
   });
 
-  await interaction.reply(
-    `Joined **${memberChannel.name}** and staying muted.`
-  );
+  await interaction.reply(`Joined **${memberChannel.name}** and staying muted.`);
+}
+
+async function handlePing(interaction) {
+  try {
+    const sent = await interaction.reply({ content: "Pinging…", fetchReply: true });
+    const rt = sent.createdTimestamp - interaction.createdTimestamp;
+    const ws = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
+    await interaction.editReply(`Pong. Round trip ~${rt} ms · WebSocket ping ~${ws} ms`);
+  } catch (err) {
+    console.error("/ping:", err);
+    const body = { content: "Could not complete /ping.", ephemeral: true };
+    try {
+      await (interaction.replied || interaction.deferred
+        ? interaction.followUp(body)
+        : interaction.reply(body));
+    } catch (_) {}
+  }
 }
 
 client.once("ready", async () => {
   try {
-    const result = await propagateSlashCommands(client.user.id);
-    console.log(`Logged in as ${client.user.tag}`);
-    if (result.mode === "guild") {
-      console.log(
-        `Slash commands are guild-scoped (${result.count} server(s)); set DISCORD_GUILD_ID to change targets.`
-      );
-    } else {
-      console.log(
-        "Slash commands are registered globally (set DISCORD_GUILD_ID for instant per-server updates)."
-      );
-    }
+    const { mode, count } = await propagateSlashCommands(client.user.id);
+    const where = mode === "guild" ? `guild ×${count}` : "global";
+    console.log(`Logged in as ${client.user.tag} · slash commands: ${where}`);
   } catch (err) {
-    console.error("Failed to register commands:", err);
+    console.error("Command registration failed:", err);
   }
 });
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "join") {
-    await connectMuted(interaction);
-    return;
-  }
-
-  if (interaction.commandName === "leave") {
-    const connection = guildConnections.get(interaction.guildId);
-    if (!connection) {
-      await interaction.reply({
-        content: "I am not in a voice channel in this server.",
-        ephemeral: true
-      });
+  switch (interaction.commandName) {
+    case "join":
+      await connectMuted(interaction);
       return;
-    }
-
-    connection.destroy();
-    guildConnections.delete(interaction.guildId);
-    await interaction.reply("Left the voice channel.");
-    return;
-  }
-
-  if (interaction.commandName === "status") {
-    const connection = guildConnections.get(interaction.guildId);
-    if (!connection) {
-      await interaction.reply("I am not connected in this server.");
-      return;
-    }
-
-    await interaction.reply("I am connected and muted in this server.");
-    return;
-  }
-
-  if (interaction.commandName === "ping") {
-    try {
-      const sent = await interaction.reply({
-        content: "Pinging…",
-        fetchReply: true
-      });
-      const roundTrip = sent.createdTimestamp - interaction.createdTimestamp;
-      const wsPing = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
-      await interaction.editReply(
-        `Pong. Round trip ~${roundTrip} ms · WebSocket ping ~${wsPing} ms`
-      );
-    } catch (err) {
-      console.error("/ping interaction error:", err);
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp({
-            content: "Could not complete /ping.",
-            ephemeral: true
-          });
-        } else {
-          await interaction.reply({
-            content: "Could not complete /ping.",
-            ephemeral: true
-          });
-        }
-      } catch (_) {
-        // Ignore secondary failures.
+    case "leave": {
+      const c = guildConnections.get(interaction.guildId);
+      if (!c) {
+        await interaction.reply({
+          content: "I am not in a voice channel in this server.",
+          ephemeral: true
+        });
+        return;
       }
+      c.destroy();
+      guildConnections.delete(interaction.guildId);
+      await interaction.reply("Left the voice channel.");
+      return;
     }
+    case "status": {
+      const c = guildConnections.get(interaction.guildId);
+      await interaction.reply(
+        c ? "I am connected and muted in this server." : "I am not connected in this server."
+      );
+      return;
+    }
+    case "ping":
+      await handlePing(interaction);
+      return;
+    default:
   }
 });
 
-console.log("STEP: before login");
-
-client
-  .login(token)
-  .then(() => {
-    console.log("Discord login: credentials accepted (waiting for ready event…)");
-  })
-  .catch((err) => {
-    console.error(
-      "Discord login failed (invalid/revoked token, intents, or network):",
-      err
-    );
-    process.exit(1);
-  });
+client.login(token).catch((err) => {
+  console.error("Discord login failed:", err);
+  process.exit(1);
+});
