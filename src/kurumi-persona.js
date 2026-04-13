@@ -35,7 +35,7 @@ const LOVE_REPLIES = [
   "Fufu… flattery will get you everywhere, Master — within reason."
 ];
 
-const TIME_HINT = /\b(time|clock|date|today|timezone|tz)\b/i;
+const TIME_HINT = /\b(time|clock|date|today|timezone|tz|ist|gmt)\b/i;
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -49,12 +49,25 @@ function chatReply(rest, ctx) {
   const t = rest.trim();
   const low = t.toLowerCase();
 
-  if (!t) return pick(GREETING_REPLIES);
+  if (!t) {
+    return pick(GREETING_REPLIES);
+  }
 
-  if (/^(hi|hey|hello|yo|sup|greetings)\b/i.test(low)) return pick(GREETING_REPLIES);
-  if (/^(bye|goodbye|gn|goodnight|cya|see ya|later)\b/i.test(low)) return pick(BYE_REPLIES);
-  if (/^(thanks|thank you|thx)\b/i.test(low)) return pick(THANK_REPLIES);
-  if (/\b(i love you|love you|ily)\b/i.test(low)) return pick(LOVE_REPLIES);
+  if (/^(hi|hey|hello|yo|sup|greetings)\b/i.test(low)) {
+    return pick(GREETING_REPLIES);
+  }
+
+  if (/^(bye|goodbye|gn|goodnight|cya|see ya|later)\b/i.test(low)) {
+    return pick(BYE_REPLIES);
+  }
+
+  if (/^(thanks|thank you|thx)\b/i.test(low)) {
+    return pick(THANK_REPLIES);
+  }
+
+  if (/\b(i love you|love you|ily)\b/i.test(low)) {
+    return pick(LOVE_REPLIES);
+  }
 
   if (TIME_HINT.test(low) && ctx.timeLine) {
     return `Master, by my reckoning it is **${ctx.timeLine}** — the clock never lies, fufu…`;

@@ -24,12 +24,15 @@ const {
 const wordle = require("./wordle");
 const { parseKurumiLine, KURUMI_HELP } = require("./kurumi-text");
 const persona = require("./kurumi-persona");
-const { formatDateTimeInZone } = require("./time-util");
+const { formatTimeAmPmVerbose, DEFAULT_DISPLAY_TIMEZONE } = require("./time-util");
 const dailyWordle = require("./daily-wordle");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
 const guildVoiceTargets = new Map();
+
+/** Avoid duplicate replies if Discord delivers the same message twice. */
+const kurumiHandledMessageIds = new Set();
 
 const VOICE_RECOVERY_MS = 120_000;
 const VOICE_HEALTH_INTERVAL_MS = 4 * 60 * 1000;
@@ -224,8 +227,7 @@ function bindVoiceRecovery(connection, guildId) {
       try {
         await establishMutedConnection(guildId, channelId);
       } catch (err) {
-        console.error("[voice] rejoin failed:", err);
-        guildVoiceTargets.delete(guildId);
+        console.error("[voice] rejoin failed (will retry while you keep this session):", err);
         guildConnections.delete(guildId);
       }
     }
@@ -265,11 +267,9 @@ async function establishMutedConnection(guildId, channelId) {
 
 function startVoiceHealthLoop() {
   setInterval(() => {
-    for (const [guildId, connection] of guildConnections) {
-      const channelId = guildVoiceTargets.get(guildId);
-      if (!channelId) continue;
-      // Only fix “zombie” map entries; Disconnected is handled by bindVoiceRecovery (long timeout + rejoin).
-      if (connection.state.status === VoiceConnectionStatus.Destroyed) {
+    for (const [guildId, channelId] of guildVoiceTargets) {
+      const connection = guildConnections.get(guildId);
+      if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
         establishMutedConnection(guildId, channelId).catch((err) => {
           console.error("[voice] health rejoin:", err);
         });
@@ -284,7 +284,9 @@ async function voiceJoinFromMember(member) {
   if (!memberChannel) {
     return {
       ok: false,
-      text: "Join a voice channel first, then run **`/join`** or say **`kurumi join`**."
+      text:
+        "You are not in a voice channel right now, Master — I **stay connected** where you last asked until you say **`/leave`** or **`kurumi leave`**. " +
+        "Join a VC and run **`/join`** or **`kurumi join`** again if you want me to move with you."
     };
   }
 
@@ -294,12 +296,13 @@ async function voiceJoinFromMember(member) {
   try {
     await establishMutedConnection(guildId, memberChannel.id);
   } catch (err) {
-    guildVoiceTargets.delete(guildId);
     guildConnections.delete(guildId);
     console.error("[voice] join failed:", err);
     return {
       ok: false,
-      text: "Could not join voice (permissions, channel, or network). Try again."
+      text:
+        "Could not join or refresh voice right now, Master — I will **keep trying** to hold this session. " +
+        "Use **`/leave`** or **`kurumi leave`** only when you want me to disconnect."
     };
   }
 
@@ -308,13 +311,20 @@ async function voiceJoinFromMember(member) {
 
 function voiceLeaveGuild(guildId) {
   const c = guildConnections.get(guildId);
-  if (!c) {
-    return { ok: false, text: "I am not in a voice channel in this server." };
-  }
+  const hadTarget = guildVoiceTargets.has(guildId);
   guildVoiceTargets.delete(guildId);
-  c.destroy();
-  guildConnections.delete(guildId);
-  return { ok: true, text: "Left the voice channel." };
+  if (c) {
+    c.destroy();
+    guildConnections.delete(guildId);
+    return { ok: true, text: "Left the voice channel." };
+  }
+  if (hadTarget) {
+    return {
+      ok: true,
+      text: "Understood, Master — I've cleared the voice session (I wasn't connected just now)."
+    };
+  }
+  return { ok: false, text: "I am not in a voice channel in this server." };
 }
 
 function voiceStatusText(guildId) {
@@ -374,9 +384,13 @@ client.on("messageCreate", async (message) => {
   const parsed = parseKurumiLine(message.content);
   if (!parsed) return;
 
+  if (kurumiHandledMessageIds.has(message.id)) return;
+  kurumiHandledMessageIds.add(message.id);
+  if (kurumiHandledMessageIds.size > 6000) kurumiHandledMessageIds.clear();
+
   const replyOpts = { allowedMentions: { repliedUser: false } };
   const sch = dailyWordle.getSchedule(message.guild.id);
-  const timeLine = formatDateTimeInZone(new Date(), sch?.timezone || "UTC");
+  const timeLine = formatTimeAmPmVerbose(new Date(), sch?.timezone || DEFAULT_DISPLAY_TIMEZONE);
 
   try {
     if (parsed.type === "yes_master") {

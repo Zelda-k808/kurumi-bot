@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { EmbedBuilder } = require("discord.js");
-const { getPartsInZone, formatDateTimeInZone } = require("./time-util");
+const { getPartsInZone, formatTimeAmPmVerbose } = require("./time-util");
 const wordle = require("./wordle");
 
 const DATA_PATH = path.join(__dirname, "..", "data", "daily-wordle.json");
@@ -211,7 +211,7 @@ async function tickDailyPost(client) {
     }
     if (!channel || !channel.isTextBased()) continue;
 
-    const when = formatDateTimeInZone(now, sch.timezone);
+    const when = formatTimeAmPmVerbose(now, sch.timezone);
     const embed = new EmbedBuilder()
       .setColor(0x8b0000)
       .setTitle("Daily Wordle — good morning, Master")

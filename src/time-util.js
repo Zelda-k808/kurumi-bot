@@ -29,7 +29,7 @@ function getPartsInZone(date, timeZone) {
   }
 }
 
-/** Human-readable instant for embeds / chat. */
+/** Human-readable instant for embeds / chat (24h). */
 function formatDateTimeInZone(date, timeZone) {
   if (!timeZone || typeof timeZone !== "string") return date.toISOString();
   try {
@@ -43,4 +43,42 @@ function formatDateTimeInZone(date, timeZone) {
   }
 }
 
-module.exports = { getPartsInZone, formatDateTimeInZone };
+/** India-friendly: weekday + date + 12h clock + AM/PM + zone abbreviation (uses Asia/Kolkata for IST). */
+function formatTimeAmPmVerbose(date, timeZone) {
+  if (!timeZone || typeof timeZone !== "string") timeZone = "Asia/Kolkata";
+  try {
+    return new Intl.DateTimeFormat("en-IN", {
+      timeZone,
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+      timeZoneName: "short"
+    }).format(date);
+  } catch {
+    try {
+      return new Intl.DateTimeFormat("en-IN", {
+        timeZone: "Asia/Kolkata",
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+        timeZoneName: "short"
+      }).format(date);
+    } catch {
+      return date.toISOString();
+    }
+  }
+}
+
+/** Default clock for “kurumi what time” when no daily schedule: India (IST). */
+const DEFAULT_DISPLAY_TIMEZONE = process.env.DEFAULT_TIMEZONE || "Asia/Kolkata";
+
+module.exports = { getPartsInZone, formatDateTimeInZone, formatTimeAmPmVerbose, DEFAULT_DISPLAY_TIMEZONE };
