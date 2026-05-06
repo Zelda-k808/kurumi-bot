@@ -441,7 +441,7 @@ function isInConversation(gid, uid) {
   return true;
 }
 
-const CONV_ENDERS = /\b(bye|goodbye|stop|end|quit|exit|cya|see ya|later|peace|gn|goodnight)\b/i;
+const CONV_ENDERS = /\b(bye|goodbye|farewell|stop|end|quit|exit|cya|see ya|later|peace|gn|goodnight|good night)\b/i;
 
 function isConvEnd(text) {
   return CONV_ENDERS.test(text.toLowerCase());
@@ -458,7 +458,10 @@ async function handleChatReply(message, text, replyOpts, timeLine) {
   const intent = persona.detectIntent(text);
   db.logChat(userId, guildId, text, line, sent.score, intent.type);
   const conv = persona.getConv(userId);
-  const topicIntent = (intent.type === "none" && conv && conv.lastIntent) ? conv.lastIntent : intent.type;
+  const genericSocial = ["greeting", "thanks", "love", "boredom", "excitement"].includes(intent.type);
+  const topicIntent = (intent.type === "none" && conv && conv.lastIntent) ? conv.lastIntent
+                      : (genericSocial && conv && conv.lastIntent) ? conv.lastIntent
+                      : intent.type;
   persona.setConv(userId, { lastIntent: topicIntent, lastBotReply: line, lastUserMsg: text });
 }
 
@@ -599,7 +602,9 @@ client.on("messageCreate", async (message) => {
 
       if (parsed.type === "chat") {
         await handleChatReply(message, parsed.text, replyOpts, timeLine);
-        enterConversation(gid, uid);
+        if (!isConvEnd(parsed.text)) {
+          enterConversation(gid, uid);
+        }
         return;
       }
     } catch (err) {

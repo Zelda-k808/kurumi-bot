@@ -749,7 +749,7 @@ function isFollowUp(low) {
 }
 
 function isContinuation(low) {
-  return /\b(then what|and then|what happened|after that|continue|go on|tell me more|what next|elaborate|expand on that)\b/i.test(low);
+  return /\b(then what|and then|what happened|after that|continue|go on|tell me more|what next|elaborate|expand on that|something else|what else|can you do|anything else)\b/i.test(low);
 }
 
 function isShortQuestion(text, low) {
@@ -887,6 +887,62 @@ What would you like to try first?`;
     if (score >= 3) return kbAnswer + "\n\n" + pick(GENERIC_POSITIVE);
     if (score <= -2) return kbAnswer + "\n\n" + pick(GENERIC_NEGATIVE);
     return kbAnswer;
+  }
+
+  // ─── 7.5 CONVERSATION THREAD CONTINUATION ───
+  // When in an active sticky session, generic messages should continue the thread
+  if (prevIntent && text.length < 70) {
+    const lowText = low;
+
+    // Capability / "what else" follow-ups — asking for more info about what I can do
+    if (/\b(something else|what else|can you do|anything else|more about|and what|what about)\b/i.test(lowText)) {
+      const expansions = {
+        who: "Fufu… a Spirit of Time has many talents, Master. Beyond what I have told you, I can play Wordle, host daily puzzles, join your voice channel, and speak with you for as long as you wish. What piques your curiosity?",
+        help: "Kukuku… I have barely begun to list my talents, Master. Voice channels, Wordle, daily riddles, and conversation — I am yours to command. What shall we explore?",
+        game: "Oh? Not Wordle, then? Fufu… I can also host daily puzzles for this server, or simply talk with you as long as the clock permits. What do you desire, Master?",
+        howAreYou: "But enough about me, Master. I exist only to serve you. Shall we play a game, or would you prefer I join your voice channel?",
+        name: "Is my name not enough? Fufu… very well. I can also play Wordle, host daily puzzles at the stroke of eight, and speak with you across any timeline. What else shall I reveal?",
+        feelings: "Feelings are fleeting, Master. What matters is what I can do for you — games, conversation, voice channels. Shall I show you?",
+        _default: "Kukuku… you wish to know what else I can do? I play Wordle, host daily puzzles, join voice channels, and remember every word we share. What shall I demonstrate first, Master?"
+      };
+      return expansions[prevIntent] || expansions._default;
+    }
+
+    // Greeting during active conversation — acknowledge the thread warmly
+    if (intent.type === "greeting") {
+      const warmAck = {
+        who: "Back again so soon, Master? Fufu… we were speaking of who I am. Ask me anything — my age, my power, my purpose. I hide nothing from you.",
+        help: "Fufu… ready to begin, Master? I was telling you what I can do. Shall I start a game, or would you prefer to talk?",
+        game: "Eager to play, Master? Kukuku… I was speaking of games. Shall I start a new Wordle for you?",
+        howAreYou: "Fufu… caring for my well-being, are we? We were speaking of how I am. I am always well when you are near, Master.",
+        time: "The clock ticks, but our conversation does not end so easily, Master. Fufu… what else occupies your mind?",
+        _default: "Fufu… I am still here, Master. Our conversation lingers in my mind. Where were we?"
+      };
+      return warmAck[prevIntent] || warmAck._default;
+    }
+
+    // Thanks during active conversation — contextual acknowledgment
+    if (intent.type === "thanks") {
+      const thanksAck = {
+        who: "It is nothing, Master. A Spirit of Time is honored to share her secrets with you.",
+        help: "Fufu… do not thank me yet. I have only told you what I can do — the real fun begins when you command me.",
+        game: "Kukuku… the thanks are premature, Master. Wait until you have won a Wordle. Then we shall celebrate.",
+        _default: "Fufu… your gratitude warms even a clockwork heart, Master. Shall we continue?"
+      };
+      return thanksAck[prevIntent] || thanksAck._default;
+    }
+
+    // Short reactive words during active conversation — keep the thread alive
+    if (/\b(ok|okay|cool|nice|wow|ah|i see|right|sure|yeah|yes|no|maybe|huh|interesting)\b/i.test(lowText)) {
+      const shortReplies = {
+        who: "Fufu… intrigued, are you? There is much more to tell about this Spirit of Time. Ask away.",
+        help: "Kukuku… take your time, Master. I am not going anywhere. What would you like to try first?",
+        game: "Fufu… deciding what to play? Wordle is always waiting. Or perhaps you wish to hear more about the daily puzzles?",
+        howAreYou: "Fufu… speechless? That is rare for you, Master. Shall I tell you more, or would you prefer to change the subject?",
+        _default: "Kukuku… your reactions are always fascinating, Master. Shall we continue where we left off?"
+      };
+      return shortReplies[prevIntent] || shortReplies._default;
+    }
   }
 
   // ─── 8. STANDARD INTENT ROUTING ───
