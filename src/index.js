@@ -533,6 +533,9 @@ client.on("messageCreate", async (message) => {
       const sent = sentiment.analyze(parsed.text);
       const intent = persona.detectIntent(parsed.text);
       db.logChat(userId, guildId, parsed.text, line, sent.score, intent.type);
+      const conv = persona.getConv(userId);
+      const topicIntent = (intent.type === "none" && conv && conv.lastIntent) ? conv.lastIntent : intent.type;
+      persona.setConv(userId, { lastIntent: topicIntent, lastBotReply: line, lastUserMsg: parsed.text });
       return;
     }
   } catch (err) {

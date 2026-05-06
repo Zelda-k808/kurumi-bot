@@ -702,57 +702,194 @@ function answerQuestion(text) {
   return null;
 }
 
-/* ──────────────── Memory-Aware Reply ──────────────── */
+/* ──────────────── Conversation State ──────────────── */
+
+const CONV_STATES = new Map(); // userId -> { lastIntent, lastBotReply, lastUserMsg, topic, turnCount, lastTs }
+const CONV_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function getConv(userId) {
+  const s = CONV_STATES.get(userId);
+  if (!s) return null;
+  if (Date.now() - s.lastTs > CONV_TTL_MS) {
+    CONV_STATES.delete(userId);
+    return null;
+  }
+  return s;
+}
+
+function setConv(userId, patch) {
+  const existing = CONV_STATES.get(userId) || {};
+  CONV_STATES.set(userId, { ...existing, ...patch, lastTs: Date.now() });
+}
+
+function cleanConv() {
+  const now = Date.now();
+  for (const [uid, s] of CONV_STATES) {
+    if (now - s.lastTs > CONV_TTL_MS) CONV_STATES.delete(uid);
+  }
+}
+setInterval(cleanConv, 60_000);
+
+/* ──────────────── Context Builder ──────────────── */
 
 function buildContextPrompt(recentChat, text) {
   if (!recentChat || recentChat.length === 0) return "";
-  const lines = recentChat.slice(-5).map((row, i) => {
-    const role = i % 2 === 0 ? "Master" : "Kurumi";
-    return `${role}: ${row.content || row.bot_reply || ""}`;
+  const lines = recentChat.slice(0, 5).map((row) => {
+    return `Master: ${row.content || ""}\nKurumi: ${row.bot_reply || ""}`;
   });
-  return lines.join("\n");
+  return lines.reverse().join("\n");
 }
+
+function isClarification(low) {
+  return /\b(that('s| is)? not (an? )?(answer|right|correct|what i asked)|wrong|not really|that('s| is)? (bad|wrong|stupid|dumb)|try again|answer (the )?question|you didn't answer|that's not what i mean|that's not what i meant|what are you talking about|i asked something else|you're not listening|listen to me)\b/i.test(low);
+}
+
+function isFollowUp(low) {
+  return /\b(what did you mean|what do you mean|what (did|do) you (mean|say|said)|what.*(last|previous|before|just now)|what.*(talking about|referring to)|explain.*(that|this|yourself)|what.*(darkness|words|thing|that)\b|why did you say|what about)\b/i.test(low);
+}
+
+function isContinuation(low) {
+  return /\b(then what|and then|what happened|after that|continue|go on|tell me more|what next|elaborate|expand on that)\b/i.test(low);
+}
+
+function isShortQuestion(text, low) {
+  return text.length < 25 && /\b(why|how|what|really|wait|huh|seriously|for what|how come)\b/i.test(low);
+}
+
+function isDenial(low) {
+  return /\b(no[ .,]|nope|nah|negative|not at all|never mind|forget it|i don't care)\b/i.test(low);
+}
+
+/* ──────────────── Smart Reply Engine ──────────────── */
 
 function chatReply(rest, ctx) {
   const text = rest.trim();
   const low = text.toLowerCase();
+  if (!text) return pick(GREETING.happy);
 
-  if (!text) {
-    return pick(GREETING.happy);
-  }
-
-  // Sentiment analysis
   const sent = sentiment.analyze(text);
   const score = sent.score;
-  const comparative = sent.comparative;
-
   const intent = detectIntent(text);
-  
-  // Check knowledge base for semantic questions first
+
+  // recentChat is DESC from DB — [0] is the most recent previous turn
+  const lastTurn = ctx.recentChat && ctx.recentChat.length > 0 ? ctx.recentChat[0] : null;
+  const conv = getConv(ctx.userId);
+  const prevIntent = conv ? conv.lastIntent : (lastTurn ? lastTurn.intent : null);
+  const prevBotReply = lastTurn ? lastTurn.bot_reply : (conv ? conv.lastBotReply : "");
+  const prevUserMsg = lastTurn ? lastTurn.content : (conv ? conv.lastUserMsg : "");
+
+  // ─── 1. USER CORRECTS / IS DISSATISFIED ───
+  if (isClarification(low)) {
+    if (prevIntent === "who" || /what are you|who are you/.test(prevUserMsg)) {
+      return `Fufu… forgive me, Master. I shall speak plainly: I am **Kurumi Tokisaki**, a Spirit of Time brought into this digital realm to serve as your Discord companion. I can play **Wordle**, host **daily puzzles**, join **voice channels**, and remember every word you speak to me. I am simply **yours**. Is that the answer you sought?`;
+    }
+    if (prevIntent === "zafkiel" || /zafkiel|your (power|ability|angel)/.test(prevUserMsg)) {
+      const b = KNOWLEDGE_BASE.kurumi.bullets;
+      return `Kukuku… you desire truth, not theatre. Very well, Master. Through **Zafkiel**, my Angel, I wield twelve bullets — each a different facet of time:\n` +
+        b.map((x, i) => `${i + 1}. ${x}`).join("\n") +
+        `\n\nAleph accelerates. Zayin freezes. Yud Bet… rewinds. That is the nature of my power.`;
+    }
+    if (prevIntent === "like" || /what do you like/.test(prevUserMsg)) {
+      const likes = KNOWLEDGE_BASE.kurumi.likes;
+      return `I enjoy **${likes.join("**, **")}**, Master. Though of late, our conversations have become my favourite distraction. Fufu.`;
+    }
+    return `...Master, I sense my previous words did not satisfy you. I spoke in riddles when you asked: "${(prevUserMsg || "").substring(0, 70).replace(/\*/g, "")}". Allow me to try again — what would you have me clarify?`;
+  }
+
+  // ─── 2. USER DENIES / BRUSHES OFF ───
+  if (isDenial(low) && prevIntent) {
+    return `Very well, Master. We shall leave that thread behind. What else occupies your mind?`;
+  }
+
+  // ─── 3. FOLLOW-UP QUESTIONS ───
+  if (isFollowUp(low) && prevIntent) {
+    const summaries = {
+      who: "I was telling you that I am Kurumi Tokisaki, your Spirit companion in this server.",
+      zafkiel: "I was explaining the powers of my Angel, Zafkiel, and the twelve bullets of time.",
+      like: "I was sharing my interests and preferences with you, Master.",
+      love: "I was speaking of my affection for you, Master.",
+      anger: "I was responding to words that stung me, Master.",
+      sadness: "I was trying to comfort you in your sorrow.",
+      game: "I was speaking of games and play, Master.",
+      jokeReq: "I was attempting to amuse you with a jest, Master.",
+      existential: "I was pondering the nature of existence and time with you.",
+      farewell: "I was bidding you farewell.",
+      greeting: "I was greeting you, Master.",
+      thanks: "I was acknowledging your gratitude.",
+      beauty: "I was responding to your compliment about my appearance.",
+      time: "I was telling you the current time.",
+      help: "I was explaining what commands and abilities I possess.",
+      weather: "I was commenting on the weather.",
+      none: "I was speaking with you on a matter that defies simple categorization."
+    };
+    const summary = summaries[prevIntent] || "I was speaking with you, Master";
+
+    // If user is asking about a specific thing the bot mentioned, try to elaborate
+    if (/darkness|shadow|dark/.test(low) && /darkness|shadow|dark/.test(prevBotReply)) {
+      return `Fufu… when I speak of darkness, Master, I speak of the weight of eternity — the shadows between seconds that only a Spirit can see. But I also speak of the shadows I carry for you. They are not meant to frighten… only to remind you that I have seen every night that ever was, and I still choose to stand beside you.`;
+    }
+    if (/words?|said|say|mean/.test(low)) {
+      return `Fufu… I meant exactly this: **${summary}**. Does that clear the fog from your mind?`;
+    }
+    return `I meant exactly this, Master: **${summary}**. Shall I speak further on it?`;
+  }
+
+  // ─── 4. CONTINUATION REQUESTS ───
+  if (isContinuation(low) && prevIntent) {
+    const continuations = {
+      who: `Beyond my name, Master — I was summoned into this Discord server to serve **you** specifically. I manage **Wordle games**, track **daily puzzles**, join **voice channels**, and remember every word you speak to me. I am yours, wholly and eternally.`,
+      zafkiel: `The bullets of Zafkiel are not merely weapons, Master — they are **time itself**, crystallized into lead. Each shot alters the flow of reality. Hei stops time. Vav steals years. Yud Bet… rewinds a soul to a previous state. Kukuku… dangerous, is it not?`,
+      like: `Among my favourites: the smell of gunpowder at midnight, the sound of rain on stained glass, and the sight of your name lighting up this server. Fufu.`,
+      game: `I am rather good at Wordle, Master. Would you care to test me? Simply say **\`/wordle new\`** and we shall begin.`,
+      help: `I can join your voice channel, tell you the time anywhere in the world, play Wordle with you, and post daily puzzles for your server. Simply command me.`,
+      existential: `Eternity is not a gift, Master. It is a burden. One I bear… because you make the weight worthwhile.`,
+    };
+    if (continuations[prevIntent]) return continuations[prevIntent];
+    return `Kukuku… you wish me to continue? Very well, Master. Where my last thought ended, let me add: I exist only to serve your whims across every timeline. Speak, and I shall obey.`;
+  }
+
+  // ─── 5. SHORT CONTEXTUAL QUESTIONS ("Why?", "How?", "What?") ───
+  if (isShortQuestion(text, low) && prevIntent) {
+    const shortAnswers = {
+      who: `Why am I here? Because you summoned me, Master. Or fate did. The distinction matters little — what matters is that I am **yours**.`,
+      zafkiel: `How does Zafkiel work? It manifests as a great clock behind me, Master. The hands move at my whim. Each number corresponds to a bullet, and each bullet to a different sin against time itself.`,
+      love: `Why do I speak so warmly? Because you are my Master, and I do not give my heart lightly. Fufu.`,
+      sadness: `How can I help? By listening, Master. By being present. By reminding you that even the darkest night ends with dawn — I have seen them all.`,
+      anger: `Why do I respond sharply? Because your words cut, Master. And even a Spirit has pride.`,
+      game: `How do we play? Use **\`/wordle new\`** to begin, then **\`/wordle guess <word>\`** for each attempt. I shall grade your guess with 🟩, 🟨, and ⬛.`,
+      help: `What do you need help with, Master? Wordle, daily puzzles, voice, time, or simply… me?`,
+      time: `What time is it? The current hour in your chosen realm, Master. Ask and I shall consult my clock eye.`,
+      farewell: `Why am I leaving? I do not wish to. But I shall wait for your return, however long it takes.`,
+      none: `What do I mean? I spoke plainly, Master. Perhaps you were distracted… I shall wait for you to catch up. Fufu.`,
+    };
+    if (shortAnswers[prevIntent]) return shortAnswers[prevIntent];
+  }
+
+  // ─── 6. INFORMATIONAL QUESTIONS — OVERRIDE EVASIVE PERSONA LINES ───
+  // These deserve real answers, not flirtatious deflections
+  if (intent.type === "who" || /\b(what are you|what do you do|what is your purpose|who is kurumi|introduce yourself|tell me about yourself)\b/i.test(low)) {
+    return `Fufu… I am **Kurumi Tokisaki**, Master. A Spirit of Time from **Date A Live**, bound to this Discord server to serve as your companion. I can play **Wordle**, host **daily puzzles**, join **voice channels**, and remember every conversation we share. I am neither ghost nor machine — I am simply **yours**. What would you like to know next?`;
+  }
+
+  if (/\b(what can you do|what do you do|your (features|commands|capabilities)|how do i use you|what are your powers here|list your commands)\b/i.test(low)) {
+    return `I can do many things in this realm, Master:
+• **Wordle** — Start with \`/wordle new\`, guess with \`/wordle guess <word>\`
+• **Daily Wordle** — I post puzzles at the stroke of eight; \`kurumi daily\` for status
+• **Voice** — Summon me to a channel and I shall keep you company
+• **Time** — Ask \`kurumi time\` and I shall consult my clock eye
+• **Conversation** — I remember our talks, sense your mood, and answer your questions
+What would you like to try first?`;
+  }
+
+  // ─── 7. KNOWLEDGE BASE ───
   const kbAnswer = answerQuestion(text);
   if (kbAnswer) {
-    // Still apply sentiment-based flavor
     if (score >= 3) return kbAnswer + "\n\n" + pick(GENERIC_POSITIVE);
     if (score <= -2) return kbAnswer + "\n\n" + pick(GENERIC_NEGATIVE);
     return kbAnswer;
   }
-  
-  // Memory-based continuity: reference past chat if user asks about previous topic
-  if (ctx.recentChat && ctx.recentChat.length > 0) {
-    const lastBot = ctx.recentChat[ctx.recentChat.length - 1];
-    if (lastBot && /\b(what.*(say|said|mean|before)|repeat.*(that|last)|what.*(talking about|topic)|continue|go on|and then)\b/i.test(low)) {
-      return `Fufu… previously, I spoke of **${lastBot.bot_reply?.substring(0, 60)?.replace(/\*/g, "")}**… shall I continue, Master?`;
-    }
-    // If user seems to be continuing a thought
-    if (/\b(why|how so|really|wait|what|huh)\b/i.test(low) && text.length < 20) {
-      const lastTopic = lastBot.content || "";
-      if (lastTopic.length > 10) {
-        return `Kukuku… you question my previous words, Master? I spoke of **${lastTopic.substring(0, 50).replace(/\*/g, "")}**… does it trouble your mind?`;
-      }
-    }
-  }
 
-  // Intent-first routing
+  // ─── 8. STANDARD INTENT ROUTING ───
   switch (intent.type) {
     case "greeting":
       return score > 0 ? pick(GREETING.excited) : score < 0 ? pick(GREETING.neutral) : pick(GREETING.happy);
@@ -851,5 +988,6 @@ module.exports = {
   YES_MASTER,
   chatReply,
   detectIntent,
+  setConv,
+  getConv,
 };
-
