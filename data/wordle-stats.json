@@ -1,0 +1,34 @@
+{
+  "test_hard": {
+    "total": 1,
+    "wins": 0,
+    "streak": 0,
+    "maxStreak": 0,
+    "distribution": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "hardTotal": 1,
+    "hardWins": 0
+  },
+  "test_user": {
+    "total": 1,
+    "wins": 0,
+    "streak": 0,
+    "maxStreak": 0,
+    "distribution": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "hardTotal": 0,
+    "hardWins": 0
+  }
+}

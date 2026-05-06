@@ -7,6 +7,8 @@ process.on("uncaughtException", (err) => console.error("uncaughtException:", err
 process.on("unhandledRejection", (reason) => console.error("unhandledRejection:", reason));
 
 const http = require("http");
+const Sentiment = require("sentiment");
+const sentiment = new Sentiment();
 const {
   Client,
   GatewayIntentBits,
@@ -26,6 +28,7 @@ const { parseKurumiLine, KURUMI_HELP } = require("./kurumi-text");
 const persona = require("./kurumi-persona");
 const { formatTimeAmPmVerbose, DEFAULT_DISPLAY_TIMEZONE } = require("./time-util");
 const dailyWordle = require("./daily-wordle");
+const db = require("./database");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -134,7 +137,12 @@ const commandData = [
             .setMaxLength(5)
         )
     )
-    .addSubcommand((s) => s.setName("status").setDescription("Show your current board.")),
+    .addSubcommand((s) => s.setName("status").setDescription("Show your current board."))
+    .addSubcommand((s) => s.setName("stats").setDescription("Show your lifetime Wordle stats."))
+    .addSubcommand((s) => s.setName("share").setDescription("Share your last finished game."))
+    .addSubcommand((s) => s.setName("hardmode").setDescription("Toggle hard mode for future games."))
+    .addSubcommand((s) => s.setName("colorblind").setDescription("Toggle high-contrast colorblind tiles."))
+    .addSubcommand((s) => s.setName("giveup").setDescription("Surrender your current game and reveal the answer.")),
   new SlashCommandBuilder()
     .setName("dailywordle")
     .setDescription("Server daily Wordle: 8:00 post + one shared word per day.")
@@ -170,6 +178,7 @@ const commandData = [
         )
     )
     .addSubcommand((s) => s.setName("status").setDescription("Your board for today's daily Wordle."))
+    .addSubcommand((s) => s.setName("leaderboard").setDescription("See today's server leaderboard."))
     .addSubcommand((s) =>
       s
         .setName("stop")
@@ -371,6 +380,8 @@ client.once("ready", async () => {
   } catch (err) {
     console.error("Command registration failed:", err);
   }
+  db.init();
+  wordle.loadWordList().catch((e) => console.error("[wordle] loadWordList", e));
   startVoiceHealthLoop();
   setInterval(() => {
     dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] tick", e));
@@ -463,6 +474,31 @@ client.on("messageCreate", async (message) => {
         await message.reply({ content: r.text, ...replyOpts });
         return;
       }
+      if (parsed.sub === "stats") {
+        const r = wordle.getStats(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.sub === "share") {
+        const r = wordle.getShare(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.sub === "hardmode") {
+        const r = wordle.toggleHardMode(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.sub === "colorblind") {
+        const r = wordle.toggleColorblind(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+      if (parsed.sub === "giveup") {
+        const r = wordle.giveUp(uid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
     }
 
     if (parsed.type === "daily") {
@@ -480,11 +516,23 @@ client.on("messageCreate", async (message) => {
         await message.reply({ content: r.text, ...replyOpts });
         return;
       }
+      if (parsed.sub === "leaderboard") {
+        const r = dailyWordle.getLeaderboard(gid);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
     }
 
     if (parsed.type === "chat") {
-      const line = persona.chatReply(parsed.text, { timeLine });
+      const userId = message.author.id;
+      const guildId = message.guild?.id || null;
+      db.ensureUser(userId, message.author.username);
+      const recentChat = db.getRecentChat(userId, 10);
+      const line = persona.chatReply(parsed.text, { timeLine, userId, recentChat });
       await message.reply({ content: line, ...replyOpts });
+      const sent = sentiment.analyze(parsed.text);
+      const intent = persona.detectIntent(parsed.text);
+      db.logChat(userId, guildId, parsed.text, line, sent.score, intent.type);
       return;
     }
   } catch (err) {
@@ -527,6 +575,31 @@ client.on("interactionCreate", async (interaction) => {
       if (sub === "guess") {
         const w = interaction.options.getString("word", true);
         const r = wordle.submitGuess(uid, w);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "stats") {
+        const r = wordle.getStats(uid);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "share") {
+        const r = wordle.getShare(uid);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "hardmode") {
+        const r = wordle.toggleHardMode(uid);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "colorblind") {
+        const r = wordle.toggleColorblind(uid);
+        await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
+        return;
+      }
+      if (sub === "giveup") {
+        const r = wordle.giveUp(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
@@ -592,6 +665,11 @@ client.on("interactionCreate", async (interaction) => {
           content: dailyWordle.dailyStatus(gid, uid),
           ephemeral: true
         });
+        return;
+      }
+      if (sub === "leaderboard") {
+        const r = dailyWordle.getLeaderboard(gid);
+        await interaction.reply({ content: r.text, ephemeral: !r.ok });
         return;
       }
       return;

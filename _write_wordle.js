@@ -1,4 +1,5 @@
-const fs = require("fs");
+const fs = require('fs');
+const content = `const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const db = require("./database");
@@ -15,7 +16,7 @@ function ensureDataDir() {
 function loadFallback() {
   try {
     const text = fs.readFileSync(FALLBACK_PATH, "utf8");
-    return text.trim().split(/\r?\n/).filter((w) => w.length === 5).map((w) => w.toLowerCase());
+    return text.trim().split(/\\r?\\n/).filter((w) => w.length === 5).map((w) => w.toLowerCase());
   } catch {
     return [];
   }
@@ -29,7 +30,7 @@ function fetchText(url) {
     https
       .get(url, { timeout: 15000 }, (res) => {
         if (res.statusCode !== 200) {
-          reject(new Error(`HTTP ${res.statusCode}`));
+          reject(new Error('HTTP ' + res.statusCode));
           return;
         }
         let data = "";
@@ -49,7 +50,7 @@ async function loadWordList() {
       if (Array.isArray(data.answers) && data.answers.length && Array.isArray(data.valid) && data.valid.length) {
         ANSWERS = data.answers.map((w) => w.toLowerCase());
         VALID_SET = new Set(data.valid.map((w) => w.toLowerCase()));
-        console.log(`[wordle] Loaded ${ANSWERS.length} answers, ${VALID_SET.size} valid words from cache.`);
+        console.log('[wordle] Loaded ' + ANSWERS.length + ' answers, ' + VALID_SET.size + ' valid words from cache.');
         return;
       }
     } catch (e) {
@@ -61,7 +62,7 @@ async function loadWordList() {
     const text = await fetchText("https://raw.githubusercontent.com/tabatkins/wordle-list/main/words");
     const words = text
       .trim()
-      .split(/\r?\n/)
+      .split(/\\r?\\n/)
       .filter((w) => w.length === 5)
       .map((w) => w.toLowerCase());
     if (words.length < 1000) throw new Error("word list too short");
@@ -69,11 +70,11 @@ async function loadWordList() {
     fs.writeFileSync(WORDS_PATH, JSON.stringify({ answers: valid, valid }, null, 2), "utf8");
     ANSWERS = valid;
     VALID_SET = new Set(valid);
-    console.log(`[wordle] Downloaded ${valid.length} words.`);
+    console.log('[wordle] Downloaded ' + valid.length + ' words.');
   } catch (e) {
     console.error("[wordle] Download failed, using fallback:", e.message);
     if (!ANSWERS.length) {
-      ANSWERS = ["about", "above", "acute", "admit", "adopt", "apple", "beach", "brain", "bread", "break", "brush", "build", "camel", "chair", "charm", "chase", "check", "child", "clean", "clear", "clock", "cloud", "coast", "count", "court", "cover", "crash", "dance", "dream", "dress", "drive", "earth", "eight", "enemy", "enjoy", "enter", "equal", "error", "event", "every", "exact", "exist", "extra", "faith", "false", "field", "fight", "final", "first", "flame", "flash", "fleet", "flesh", "float", "floor", "focus", "force", "forge", "frame", "front", "fruit", "fully", "funny", "glass", "globe", "grace", "grade", "grain", "grand", "grant", "grape", "graph", "grass", "grave", "great", "green", "greet", "group", "guard", "guest", "guide", "happy", "heart", "heavy", "horse", "hotel", "house", "human", "humor", "ideal", "image", "index", "inner", "input", "issue", "judge", "juice", "knife", "knock", "known", "label", "large", "laser", "later", "laugh", "layer", "learn", "lease", "least", "leave", "legal", "lemon", "level", "light", "limit", "local", "lower", "lucky", "lunch", "magic", "major", "maker", "match", "maybe", "media", "metal", "meter", "might", "model", "money", "month", "moral", "motor", "mount", "mouse", "mouth", "movie", "music", "night", "noise", "north", "novel", "nurse", "ocean", "offer", "often", "order", "organ", "other", "ought", "paint", "panel", "paper", "party", "peace", "phone", "photo", "piano", "piece", "pilot", "pitch", "place", "plain", "plane", "plant", "plate", "point", "pound", "power", "press", "price", "pride", "prime", "print", "prize", "proof", "proud", "prove", "pulse", "punch", "queen", "quick", "quiet", "quite", "radio", "raise", "range", "rapid", "ratio", "reach", "react", "ready", "refer", "reply", "right", "rigid", "river", "roman", "rough", "round", "route", "royal", "rural", "rusty", "salad", "sales", "sauce", "scale", "scare", "scene", "scope", "score", "sense", "serve", "seven", "shake", "shame", "shape", "share", "sharp", "sheep", "sheet", "shelf", "shell", "shift", "shine", "shirt", "shock", "shoot", "short", "shown", "silly", "since", "skill", "sleep", "slice", "slide", "slope", "small", "smart", "smile", "smith", "smoke", "snake", "sorry", "sound", "south", "space", "spare", "spark", "speak", "speed", "spell", "spend", "spice", "spill", "split", "spoke", "spoon", "sport", "spray", "stack", "staff", "stage", "stain", "stair", "stake", "stamp", "stand", "stare", "start", "state", "steak", "steam", "steel", "steep", "stick", "still", "stock", "stone", "store", "storm", "story", "stove", "strap", "straw", "strip", "stuck", "study", "stuff", "style", "sugar", "suite", "sunny", "super", "surge", "swear", "sweat", "sweep", "sweet", "swift", "swing", "sword", "table", "taste", "teach", "teeth", "thank", "theme", "there", "these", "thick", "thief", "thing", "think", "third", "those", "three", "throw", "tight", "tired", "title", "today", "token", "tooth", "topic", "total", "touch", "tough", "towel", "tower", "toxic", "trace", "track", "trade", "trail", "train", "trait", "treat", "trend", "trial", "tribe", "trick", "troop", "truck", "truly", "trunk", "trust", "truth", "twice", "uncle", "under", "union", "unity", "until", "upper", "upset", "urban", "usage", "usual", "valid", "value", "video", "virus", "visit", "vital", "vocal", "voice", "waste", "watch", "water", "weary", "weave", "wedge", "weigh", "weird", "whale", "wheel", "where", "which", "while", "white", "whole", "whose", "width", "windy", "woman", "women", "world", "worry", "worse", "worst", "worth", "would", "wound", "write", "wrong", "yield", "young", "youth"];
+      ANSWERS = loadFallback();
       VALID_SET = new Set(ANSWERS);
     }
   }
@@ -135,21 +136,21 @@ function buildKeyboard(guesses) {
         .split(" ")
         .map((ch) => {
           const s = state[ch];
-          if (s === "correct") return `**${ch}**`;
-          if (s === "present") return `*${ch}*`;
-          if (s === "absent") return `~~${ch}~~`;
+          if (s === "correct") return "**" + ch + "**";
+          if (s === "present") return "*" + ch + "*";
+          if (s === "absent") return "~~" + ch + "~~";
           return ch;
         })
         .join(" ")
     )
-    .join("\n");
+    .join("\\n");
 }
 
 function formatBoard(game) {
   if (!game.guesses.length) return "_No guesses yet._";
-  const rows = game.guesses.map(({ word, grades }) => `${gradeToEmojis(grades, game.colorblind)} \`${word.toUpperCase()}\``);
+  const rows = game.guesses.map(({ word, grades }) => gradeToEmojis(grades, game.colorblind) + " \`" + word.toUpperCase() + "\`");
   const kb = buildKeyboard(game.guesses);
-  return rows.join("\n") + "\n\n**Keyboard**\n" + kb;
+  return rows.join("\\n") + "\\n\\n**Keyboard**\\n" + kb;
 }
 
 function validateHardMode(guesses, newGuess) {
@@ -176,14 +177,14 @@ function validateHardMode(guesses, newGuess) {
   }
   for (let i = 0; i < 5; i++) {
     if (requiredPos[i] && newGuess[i] !== requiredPos[i]) {
-      return { ok: false, reason: `Hard mode: position ${i + 1} must be **${requiredPos[i].toUpperCase()}**` };
+      return { ok: false, reason: "Hard mode: position " + (i + 1) + " must be **" + requiredPos[i].toUpperCase() + "**" };
     }
   }
   const guessCounts = {};
   for (const ch of newGuess) guessCounts[ch] = (guessCounts[ch] || 0) + 1;
   for (const [ch, min] of Object.entries(requiredCounts)) {
     if ((guessCounts[ch] || 0) < min) {
-      return { ok: false, reason: `Hard mode: guess must contain **${min}** ${min > 1 ? "copies" : "copy"} of **${ch.toUpperCase()}**` };
+      return { ok: false, reason: "Hard mode: guess must contain **" + min + "** " + (min > 1 ? "copies" : "copy") + " of **" + ch.toUpperCase() + "**" };
     }
   }
   return { ok: true };
@@ -207,8 +208,8 @@ function recordResult(userId, won, guessesUsed, hardMode) {
 
 function buildShare(game) {
   const lines = game.guesses.map(({ grades }) => gradeToEmojis(grades, game.colorblind));
-  const header = `Kurumi Wordle ${game.won ? game.guesses.length : "X"}/${MAX_GUESSES}`;
-  return [header, ...lines].join("\n");
+  const header = "Kurumi Wordle " + (game.won ? game.guesses.length : "X") + "/" + MAX_GUESSES;
+  return [header, ...lines].join("\\n");
 }
 
 function startNewGame(userId) {
@@ -216,30 +217,28 @@ function startNewGame(userId) {
   const answer = randomAnswer();
   const game = { answer, guesses: [], hard_mode: p.hard_mode, colorblind: p.colorblind };
   db.setWordleGame(userId, game);
-  const modeLine = p.hard_mode ? "\n🎯 **Hard mode** is on — revealed hints must be used." : "";
-  const cbLine = p.colorblind ? "\n🔲 **Colorblind mode** is on (🟦🟧⬛)." : "";
+  const modeLine = p.hard_mode ? "\\n🎯 **Hard mode** is on — revealed hints must be used." : "";
+  const cbLine = p.colorblind ? "\\n🔲 **Colorblind mode** is on (🟦🟧⬛)." : "";
   return {
-    text: `New **Wordle** — 6 guesses, 5 letters.${modeLine}${cbLine}\nUse **\`/wordle guess\`** or **\`kurumi wordle guess <word>\`**\n**\`/wordle status\`** shows your board.`,
+    text: "New **Wordle** — 6 guesses, 5 letters." + modeLine + cbLine + "\\nUse **\\`/wordle guess\\`** or **\\`kurumi wordle guess <word>\\`**\\n**\\`/wordle status\\`** shows your board.",
     ephemeral: true,
   };
 }
 
 function getStatus(userId) {
   const game = db.getWordleGame(userId);
-  if (!game) return { text: "No active game. Start with **`/wordle new`**.", ephemeral: true };
+  if (!game) return { text: "No active game. Start with **\\`/wordle new\\`**.", ephemeral: true };
   return {
-    text: `**Your Wordle** (${game.guesses.length}/${MAX_GUESSES})${game.hard_mode ? " 🎯 Hard" : ""}${game.colorblind ? " 🔲" : ""}\n${formatBoard(game)}`,
+    text: "**Your Wordle** (" + game.guesses.length + "/" + MAX_GUESSES + ")" + (game.hard_mode ? " 🎯 Hard" : "") + (game.colorblind ? " 🔲" : "") + "\\n" + formatBoard(game),
     ephemeral: true,
   };
 }
 
 function submitGuess(userId, raw) {
   const game = db.getWordleGame(userId);
-  if (!game) return { text: "No active game. Use **`/wordle new`** first.", ephemeral: true };
+  if (!game) return { text: "No active game. Use **\\`/wordle new\\`** first.", ephemeral: true };
 
-  const guess = String(raw || "")
-    .toLowerCase()
-    .replace(/[^a-z]/g, "");
+  const guess = String(raw || "").toLowerCase().replace(/[^a-z]/g, "");
   if (guess.length !== 5) return { text: "Your guess must be **exactly 5 letters** (A–Z).", ephemeral: true };
   if (!VALID_SET.has(guess)) return { text: "That word is **not in my dictionary**. Try another.", ephemeral: true };
 
@@ -252,7 +251,7 @@ function submitGuess(userId, raw) {
   game.guesses.push({ word: guess, grades });
   db.setWordleGame(userId, game);
 
-  const row = `${gradeToEmojis(grades, game.colorblind)} \`${guess.toUpperCase()}\``;
+  const row = gradeToEmojis(grades, game.colorblind) + " \`" + guess.toUpperCase() + "\`";
   const board = formatBoard(game);
 
   if (guess === game.answer) {
@@ -261,7 +260,7 @@ function submitGuess(userId, raw) {
     db.deleteWordleGame(userId);
     const share = buildShare(db.getWordleLastGame(userId));
     return {
-      text: `${row}\n\n**Solved** in **${game.guesses.length}** guess(es)! 🎉\n\n${board}\n\n**Share:**\n\`\`\`\n${share}\n\`\`\``,
+      text: row + "\\n\\n**Solved** in **" + game.guesses.length + "** guess(es)! 🎉\\n\\n" + board + "\\n\\n**Share:**\\n\`\`\`\\n" + share + "\\n\`\`\`",
       ephemeral: true,
     };
   }
@@ -272,13 +271,13 @@ function submitGuess(userId, raw) {
     recordResult(userId, false, 0, game.hard_mode);
     db.deleteWordleGame(userId);
     return {
-      text: `${row}\n\n**Out of guesses.** The word was **${ans}**.\n\n${board}`,
+      text: row + "\\n\\n**Out of guesses.** The word was **" + ans + "**.\\n\\n" + board,
       ephemeral: true,
     };
   }
 
   return {
-    text: `${row}\n\n**${MAX_GUESSES - game.guesses.length}** guess(es) left.\n\n${board}`,
+    text: row + "\\n\\n**" + (MAX_GUESSES - game.guesses.length) + "** guess(es) left.\\n\\n" + board,
     ephemeral: true,
   };
 }
@@ -291,7 +290,7 @@ function giveUp(userId) {
   recordResult(userId, false, 0, game.hard_mode);
   db.deleteWordleGame(userId);
   return {
-    text: `You **gave up**. The word was **${ans}**.\n\n${formatBoard(game)}`,
+    text: "You **gave up**. The word was **" + ans + "**.\\n\\n" + formatBoard(game),
     ephemeral: true,
   };
 }
@@ -305,16 +304,16 @@ function getStats(userId) {
     .map((n, i) => {
       const filled = Math.round((n / max) * 8);
       const bar = "▓".repeat(filled) + "░".repeat(8 - filled);
-      return `${i + 1} ${bar} ${n}`;
+      return (i + 1) + " " + bar + " " + n;
     })
-    .join("\n");
+    .join("\\n");
   return {
     text:
-      `**Your Wordle Stats**\n` +
-      `Games: **${s.games_played}** · Wins: **${s.games_won}** · Win %: **${winRate}%**\n` +
-      `Current streak: **${s.current_streak}** · Max streak: **${s.max_streak}**\n` +
-      (s.hard_played ? `Hard mode: **${s.hard_won}/${s.hard_played}** won (**${hardRate}%**)\n` : "") +
-      `\n**Guess Distribution**\n${bars}`,
+      "**Your Wordle Stats**\\n" +
+      "Games: **" + s.games_played + "** · Wins: **" + s.games_won + "** · Win %: **" + winRate + "%**\\n" +
+      "Current streak: **" + s.current_streak + "** · Max streak: **" + s.max_streak + "**\\n" +
+      (s.hard_played ? "Hard mode: **" + s.hard_won + "/" + s.hard_played + "** won (**" + hardRate + "%**)\\n" : "") +
+      "\\n**Guess Distribution**\\n" + bars,
     ephemeral: true,
   };
 }
@@ -323,7 +322,7 @@ function getShare(userId) {
   const g = db.getWordleLastGame(userId);
   if (!g) return { text: "No completed game to share. Finish a game first!", ephemeral: true };
   const share = buildShare(g);
-  return { text: `\`\`\`\n${share}\n\`\`\``, ephemeral: false };
+  return { text: "\`\`\`\\n" + share + "\\n\`\`\`", ephemeral: false };
 }
 
 function toggleHardMode(userId) {
@@ -331,7 +330,7 @@ function toggleHardMode(userId) {
   p.hard_mode = !p.hard_mode;
   db.setPrefs(userId, p);
   const state = p.hard_mode ? "ON" : "OFF";
-  return { text: `Hard mode is now **${state}** for your next game.`, ephemeral: true };
+  return { text: "Hard mode is now **" + state + "** for your next game.", ephemeral: true };
 }
 
 function toggleColorblind(userId) {
@@ -339,7 +338,7 @@ function toggleColorblind(userId) {
   p.colorblind = !p.colorblind;
   db.setPrefs(userId, p);
   const state = p.colorblind ? "ON" : "OFF";
-  return { text: `Colorblind mode is now **${state}** (🟦🟧⬛).`, ephemeral: true };
+  return { text: "Colorblind mode is now **" + state + "** (🟦🟧⬛).", ephemeral: true };
 }
 
 module.exports = {
@@ -360,3 +359,6 @@ module.exports = {
   buildKeyboard,
   getOrCreatePrefs: (uid) => db.getPrefs(uid),
 };
+`;
+fs.writeFileSync('src/wordle.js', content);
+console.log('wordle.js written');

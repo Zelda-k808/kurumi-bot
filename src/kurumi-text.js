@@ -7,7 +7,8 @@ const KURUMI_HELP =
   "**Kurumi text commands** (message must **start** with `kurumi` — any caps):\n" +
   "`kurumi` alone · `kurumi join` · `kurumi leave` · `kurumi status` · `kurumi ping`\n" +
   "`kurumi wordle new` · `kurumi wordle guess <word>` · `kurumi wordle status`\n" +
-  "`kurumi daily guess <word>` · `kurumi daily status` · chat: **`kurumi hi`** etc.\n" +
+  "`kurumi wordle stats` · `kurumi wordle share` · `kurumi wordle hardmode` · `kurumi wordle colorblind` · `kurumi wordle giveup`\n" +
+  "`kurumi daily guess <word>` · `kurumi daily status` · `kurumi daily leaderboard` · chat: **`kurumi hi`** etc.\n" +
   "`kurumi help` — this list";
 
 /**
@@ -31,6 +32,11 @@ function parseKurumiLine(content) {
     const sub = (tokens[1] || "").toLowerCase();
     if (sub === "new" && tokens.length === 2) return { type: "wordle", sub: "new" };
     if (sub === "status" && tokens.length === 2) return { type: "wordle", sub: "status" };
+    if (sub === "stats" && tokens.length === 2) return { type: "wordle", sub: "stats" };
+    if (sub === "share" && tokens.length === 2) return { type: "wordle", sub: "share" };
+    if (sub === "hardmode" && tokens.length === 2) return { type: "wordle", sub: "hardmode" };
+    if (sub === "colorblind" && tokens.length === 2) return { type: "wordle", sub: "colorblind" };
+    if (sub === "giveup" && tokens.length === 2) return { type: "wordle", sub: "giveup" };
     if (sub === "guess" && tokens.length === 3) {
       const word = tokens[2].toLowerCase().replace(/[^a-z]/g, "");
       if (word.length === 5) return { type: "wordle", sub: "guess", word };
@@ -41,6 +47,7 @@ function parseKurumiLine(content) {
   if (head === "daily") {
     const sub = (tokens[1] || "").toLowerCase();
     if (sub === "status" && tokens.length === 2) return { type: "daily", sub: "status" };
+    if (sub === "leaderboard" && tokens.length === 2) return { type: "daily", sub: "leaderboard" };
     if (sub === "guess" && tokens.length === 3) {
       const word = tokens[2].toLowerCase().replace(/[^a-z]/g, "");
       if (word.length === 5) return { type: "daily", sub: "guess", word };

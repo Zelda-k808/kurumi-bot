@@ -1,95 +1,46 @@
-const fs = require("fs");
-const path = require("path");
 const { EmbedBuilder } = require("discord.js");
 const { getPartsInZone, formatTimeAmPmVerbose } = require("./time-util");
 const wordle = require("./wordle");
+const db = require("./database");
 
-const DATA_PATH = path.join(__dirname, "..", "data", "daily-wordle.json");
 const DEFAULT_TZ = process.env.WORDLE_DAILY_TZ || "UTC";
 const DAILY_HOUR = Number.parseInt(process.env.WORDLE_DAILY_HOUR || "8", 10);
 
-/** @type {{ schedules: Record<string, { channelId: string, timezone: string, lastPostedDate: string }>, answers: Record<string, string> }}} */
-let cache = { schedules: {}, answers: {} };
-
-/** @type {Map<string, Map<string, { ymd: string, guesses: { word: string, grades: string[] }[], solved?: boolean, lost?: boolean }>>} */
-const dailyProgress = new Map();
-
-function ensureDataDir() {
-  const dir = path.dirname(DATA_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function load() {
-  ensureDataDir();
-  try {
-    const raw = fs.readFileSync(DATA_PATH, "utf8");
-    cache = JSON.parse(raw);
-    if (!cache.schedules) cache.schedules = {};
-    if (!cache.answers) cache.answers = {};
-  } catch {
-    cache = { schedules: {}, answers: {} };
-    save();
-  }
-}
-
-function save() {
-  ensureDataDir();
-  fs.writeFileSync(DATA_PATH, JSON.stringify(cache, null, 2), "utf8");
-}
-
-function answerKey(guildId, ymd) {
-  return `${guildId}:${ymd}`;
-}
-
 function getSchedule(guildId) {
-  return cache.schedules[guildId] ?? null;
+  const row = db.getDailySchedule(guildId);
+  if (!row) return null;
+  return { channelId: row.channel_id, timezone: row.timezone, lastPostedDate: row.last_posted || "" };
 }
 
 function setSchedule(guildId, channelId, timezone) {
   const tz = (timezone && String(timezone).trim()) || DEFAULT_TZ;
   if (!getPartsInZone(new Date(), tz)) throw new Error("Invalid IANA timezone (example: Asia/Tokyo, America/New_York).");
-  cache.schedules[guildId] = { channelId, timezone: tz, lastPostedDate: "" };
-  save();
+  db.setDailySchedule(guildId, channelId, tz, DAILY_HOUR);
 }
 
 function clearSchedule(guildId) {
-  delete cache.schedules[guildId];
-  save();
+  db.deleteDailySchedule(guildId);
 }
 
 function getTodayAnswer(guildId, timezone) {
   const parts = getPartsInZone(new Date(), timezone);
   if (!parts) return null;
-  const key = answerKey(guildId, parts.ymd);
-  if (!cache.answers[key]) {
-    cache.answers[key] = wordle.pickRandomAnswer();
-    save();
+  let ans = db.getDailyAnswer(guildId, parts.ymd);
+  if (!ans) {
+    const word = wordle.pickRandomAnswer();
+    db.setDailyAnswer(guildId, parts.ymd, word);
+    ans = { answer: word };
   }
-  return { word: cache.answers[key], ymd: parts.ymd, key };
-}
-
-function getUserDailyGame(guildId, userId) {
-  const g = dailyProgress.get(guildId);
-  if (!g) return null;
-  return g.get(userId) ?? null;
+  return { word: ans.answer, ymd: parts.ymd };
 }
 
 function ensureUserDaily(guildId, userId, ymd) {
-  if (!dailyProgress.has(guildId)) dailyProgress.set(guildId, new Map());
-  const m = dailyProgress.get(guildId);
-  if (!m.has(userId)) m.set(userId, { ymd, guesses: [] });
-  const st = m.get(userId);
-  if (st.ymd !== ymd) {
-    st.ymd = ymd;
-    st.guesses = [];
-    st.solved = false;
-    st.lost = false;
+  let prog = db.getDailyProgress(guildId, ymd, userId);
+  if (!prog) {
+    prog = { guesses: [], solved: false, lost: false, guess_count: 0, solved_at: null };
+    db.setDailyProgress(guildId, ymd, userId, prog);
   }
-  return st;
-}
-
-function resetGuildProgress(guildId) {
-  dailyProgress.delete(guildId);
+  return prog;
 }
 
 function submitDailyGuess(guildId, userId, rawGuess) {
@@ -123,58 +74,59 @@ function submitDailyGuess(guildId, userId, rawGuess) {
   }
 
   const grades = wordle.gradeGuess(today.word, guess);
-  game.guesses.push({ word: guess, grades });
-  const row = `${wordle.gradeToEmojis(grades)} \`${guess.toUpperCase()}\``;
-  const board = game.guesses
-    .map(
-      ({ word, grades: g }) =>
-        `${wordle.gradeToEmojis(g)} \`${word.toUpperCase()}\``
-    )
+  const guessesArr = JSON.parse(game.guesses || "[]");
+  guessesArr.push({ word: guess, grades });
+  game.guesses = JSON.stringify(guessesArr);
+  game.guess_count = guessesArr.length;
+  db.setDailyProgress(guildId, today.ymd, userId, game);
+
+  const prefs = wordle.getOrCreatePrefs(userId);
+  const row = `${wordle.gradeToEmojis(grades, prefs.colorblind)} \`${guess.toUpperCase()}\``;
+  const board = guessesArr
+    .map(({ word, grades: g }) => `${wordle.gradeToEmojis(g, prefs.colorblind)} \`${word.toUpperCase()}\``)
     .join("\n");
+  const kb = wordle.buildKeyboard(guessesArr);
 
   if (guess === today.word) {
     game.solved = true;
+    game.solved_at = Date.now();
+    db.setDailyProgress(guildId, today.ymd, userId, game);
     return {
       ok: true,
-      text: `${row}\n\n**Splendid**, Master — you solved **today's** daily in **${game.guesses.length}** try/tries! 🎉\n\n${board}`
+      text: `${row}\n\n**Splendid**, Master — you solved **today's** daily in **${guessesArr.length}** try/tries! 🎉\n\n${board}\n\n**Keyboard**\n${kb}`
     };
   }
 
-  if (game.guesses.length >= wordle.MAX_GUESSES) {
+  if (guessesArr.length >= wordle.MAX_GUESSES) {
     game.lost = true;
+    db.setDailyProgress(guildId, today.ymd, userId, game);
     return {
       ok: true,
-      text: `${row}\n\nThe sands have run out, Master. Today's word was **${today.word.toUpperCase()}**.\n\n${board}`
+      text: `${row}\n\nThe sands have run out, Master. Today's word was **${today.word.toUpperCase()}**.\n\n${board}\n\n**Keyboard**\n${kb}`
     };
   }
 
   return {
     ok: true,
-    text: `${row}\n\n**${wordle.MAX_GUESSES - game.guesses.length}** guess(es) remain for **today's** daily, Master.\n\n${board}`
+    text: `${row}\n\n**${wordle.MAX_GUESSES - guessesArr.length}** guess(es) remain for **today's** daily, Master.\n\n${board}\n\n**Keyboard**\n${kb}`
   };
 }
 
 function dailyStatus(guildId, userId) {
   const sch = getSchedule(guildId);
   if (!sch) {
-    return "No **daily Wordle** is configured here. A moderator may use **`/dailywordle setup`**.";
+    return "No **daily Wordle** is configured here. A moderator may use **`/dailywordle setup`** to begin.";
   }
   const today = getTodayAnswer(guildId, sch.timezone);
   if (!today) return "Could not read today's puzzle.";
-  const game = getUserDailyGame(guildId, userId);
-  if (game && game.ymd !== today.ymd) {
-    game.ymd = today.ymd;
-    game.guesses = [];
-    game.solved = false;
-    game.lost = false;
-  }
-  const n = game?.guesses.length ?? 0;
-  const lines = game?.guesses.length
-    ? game.guesses
-        .map(
-          ({ word, grades }) =>
-            `${wordle.gradeToEmojis(grades)} \`${word.toUpperCase()}\``
-        )
+
+  const game = db.getDailyProgress(guildId, today.ymd, userId);
+  const guessesArr = game ? JSON.parse(game.guesses || "[]") : [];
+  const n = guessesArr.length;
+  const prefs = wordle.getOrCreatePrefs(userId);
+  const lines = guessesArr.length
+    ? guessesArr
+        .map(({ word, grades }) => `${wordle.gradeToEmojis(grades, prefs.colorblind)} \`${word.toUpperCase()}\``)
         .join("\n")
     : "_No guesses yet today._";
   let tail = "";
@@ -183,70 +135,92 @@ function dailyStatus(guildId, userId) {
   return `**Daily Wordle** (${today.ymd}) — you have used **${n}/${wordle.MAX_GUESSES}** guesses.\n${lines}${tail}`;
 }
 
+function getLeaderboard(guildId) {
+  const sch = getSchedule(guildId);
+  if (!sch) {
+    return { ok: false, text: "This server has **no daily Wordle** configured. A moderator may use **`/dailywordle setup`** to begin." };
+  }
+  const today = getTodayAnswer(guildId, sch.timezone);
+  if (!today) return { ok: false, text: "Could not resolve today's puzzle." };
+
+  const entries = db.getDailyLeaderboard(guildId, today.ymd);
+  if (!entries.length) {
+    return { ok: true, text: `**Daily Wordle Leaderboard** (${today.ymd})\n\n_No one has played today's daily yet._` };
+  }
+
+  let text = `**Daily Wordle Leaderboard** (${today.ymd})\n`;
+  text += `_Sorted by: solved → guesses → speed_\n\n`;
+  entries.slice(0, 20).forEach((e, i) => {
+    const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : "•";
+    const status = e.solved ? `🟩 ${e.guess_count}/${wordle.MAX_GUESSES}` : e.lost ? "⬛ X/6" : `${e.guess_count}/${wordle.MAX_GUESSES}`;
+    text += `${medal} <@${e.user_id}> — ${status}\n`;
+  });
+
+  return { ok: true, text };
+}
+
 /**
  * Call once per minute from the bot client.
  * @param {import("discord.js").Client} client
  */
 async function tickDailyPost(client) {
   const now = new Date();
-  for (const [guildId, sch] of Object.entries(cache.schedules)) {
-    const parts = getPartsInZone(now, sch.timezone);
+  const schedules = db.getAllSchedules();
+  for (const schRow of schedules) {
+    const guildId = schRow.guild_id;
+    const parts = getPartsInZone(now, schRow.timezone);
     if (!parts) continue;
 
     if (parts.hour !== DAILY_HOUR || parts.minute !== 0) continue;
-    if (sch.lastPostedDate === parts.ymd) continue;
+    if (schRow.last_posted === parts.ymd) continue;
 
-    const key = answerKey(guildId, parts.ymd);
-    if (!cache.answers[key]) {
-      cache.answers[key] = wordle.pickRandomAnswer();
-      save();
+    let ans = db.getDailyAnswer(guildId, parts.ymd);
+    if (!ans) {
+      db.setDailyAnswer(guildId, parts.ymd, wordle.pickRandomAnswer());
     }
 
     const guild = client.guilds.cache.get(guildId);
     if (!guild) continue;
 
-    let channel = guild.channels.cache.get(sch.channelId);
+    let channel = guild.channels.cache.get(schRow.channel_id);
     if (!channel) {
-      channel = await guild.channels.fetch(sch.channelId).catch(() => null);
+      channel = await guild.channels.fetch(schRow.channel_id).catch(() => null);
     }
     if (!channel || !channel.isTextBased()) continue;
 
-    const when = formatTimeAmPmVerbose(now, sch.timezone);
+    const when = formatTimeAmPmVerbose(now, schRow.timezone);
     const embed = new EmbedBuilder()
       .setColor(0x8b0000)
-      .setTitle("Daily Wordle — good morning, Master")
+      .setTitle("Daily Wordle — a new word awaits, Master")
       .setDescription(
         `The clock strikes **eight** — a new word awaits this server today (**${parts.ymd}**).\n\n` +
           "Everyone shares **one** secret word until midnight (in this schedule's timezone).\n" +
           "• Slash: **`/dailywordle guess`**\n" +
-          "• Text: **`kurumi daily guess crate`**\n" +
-          "• Progress: **`/dailywordle status`** or **`kurumi daily status`**\n\n" +
-          `_Posted at ${when} (${sch.timezone})_`
+          "• Text: **`kurumi daily guess <word>`**\n" +
+          "• Progress: **`/dailywordle status`** or **`kurumi daily status`**\n" +
+          "• Leaderboard: **`/dailywordle leaderboard`**\n\n" +
+          `_Posted at ${when} (${schRow.timezone})_`
       )
       .setFooter({ text: "Kurumi · same word for all — six guesses each" });
 
     try {
       await channel.send({ embeds: [embed] });
-      sch.lastPostedDate = parts.ymd;
-      save();
-      resetGuildProgress(guildId);
+      db.setDailySchedule(guildId, schRow.channel_id, schRow.timezone, DAILY_HOUR);
     } catch (e) {
       console.error("[daily-wordle] post failed", guildId, e);
     }
   }
 }
 
-load();
-
 module.exports = {
-  load,
   getSchedule,
   setSchedule,
   clearSchedule,
   getTodayAnswer,
   submitDailyGuess,
   dailyStatus,
+  getLeaderboard,
   tickDailyPost,
   DEFAULT_TZ,
-  DAILY_HOUR
+  DAILY_HOUR,
 };
