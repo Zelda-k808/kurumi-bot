@@ -163,6 +163,18 @@ function getLeaderboard(guildId) {
  * Call once per minute from the bot client.
  * @param {import("discord.js").Client} client
  */
+function hasActiveDaily(guildId, userId) {
+  const sch = getSchedule(guildId);
+  if (!sch) return false;
+  const today = getTodayAnswer(guildId, sch.timezone);
+  if (!today) return false;
+  const game = db.getDailyProgress(guildId, today.ymd, userId);
+  if (!game) return false;
+  if (game.solved || game.lost) return false;
+  const guessesArr = JSON.parse(game.guesses || "[]");
+  return guessesArr.length < wordle.MAX_GUESSES;
+}
+
 async function tickDailyPost(client) {
   const now = new Date();
   const schedules = db.getAllSchedules();
@@ -220,6 +232,7 @@ module.exports = {
   submitDailyGuess,
   dailyStatus,
   getLeaderboard,
+  hasActiveDaily,
   tickDailyPost,
   DEFAULT_TZ,
   DAILY_HOUR,

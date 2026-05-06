@@ -387,159 +387,269 @@ client.once("ready", async () => {
     dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] tick", e));
   }, 60_000);
   dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] initial tick", e));
+
+  // Conversation cleanup: prune stale sessions every minute
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, s] of activeConversations.entries()) {
+      if (now - s.lastActivity > CONV_TIMEOUT_MS) {
+        activeConversations.delete(key);
+      }
+    }
+  }, 60_000);
 });
+
+/* ───────────── Sticky conversation + Wordle shorthand ───────────── */
+const activeConversations = new Map();
+const CONV_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+const CONV_MAX_TURNS = 20;
+
+function getConvKey(gid, uid) { return `${gid}:${uid}`; }
+
+function enterConversation(gid, uid) {
+  activeConversations.set(getConvKey(gid, uid), {
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+    turnCount: 0,
+  });
+}
+
+function exitConversation(gid, uid) {
+  activeConversations.delete(getConvKey(gid, uid));
+}
+
+function bumpConversation(gid, uid) {
+  const s = activeConversations.get(getConvKey(gid, uid));
+  if (s) {
+    s.lastActivity = Date.now();
+    s.turnCount += 1;
+  }
+}
+
+function isInConversation(gid, uid) {
+  const key = getConvKey(gid, uid);
+  const s = activeConversations.get(key);
+  if (!s) return false;
+  if (Date.now() - s.lastActivity > CONV_TIMEOUT_MS) {
+    activeConversations.delete(key);
+    return false;
+  }
+  if (s.turnCount >= CONV_MAX_TURNS) {
+    activeConversations.delete(key);
+    return false;
+  }
+  return true;
+}
+
+const CONV_ENDERS = /\b(bye|goodbye|stop|end|quit|exit|cya|see ya|later|peace|gn|goodnight)\b/i;
+
+function isConvEnd(text) {
+  return CONV_ENDERS.test(text.toLowerCase());
+}
+
+async function handleChatReply(message, text, replyOpts, timeLine) {
+  const userId = message.author.id;
+  const guildId = message.guild?.id || null;
+  db.ensureUser(userId, message.author.username);
+  const recentChat = db.getRecentChat(userId, 10);
+  const line = persona.chatReply(text, { timeLine, userId, recentChat });
+  await message.reply({ content: line, ...replyOpts });
+  const sent = sentiment.analyze(text);
+  const intent = persona.detectIntent(text);
+  db.logChat(userId, guildId, text, line, sent.score, intent.type);
+  const conv = persona.getConv(userId);
+  const topicIntent = (intent.type === "none" && conv && conv.lastIntent) ? conv.lastIntent : intent.type;
+  persona.setConv(userId, { lastIntent: topicIntent, lastBotReply: line, lastUserMsg: text });
+}
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
-
-  const parsed = parseKurumiLine(message.content);
-  if (!parsed) return;
 
   if (kurumiHandledMessageIds.has(message.id)) return;
   kurumiHandledMessageIds.add(message.id);
   if (kurumiHandledMessageIds.size > 6000) kurumiHandledMessageIds.clear();
 
+  const content = message.content.trim();
+  const uid = message.author.id;
+  const gid = message.guild.id;
   const replyOpts = { allowedMentions: { repliedUser: false } };
   const sch = dailyWordle.getSchedule(message.guild.id);
   const timeLine = formatTimeAmPmVerbose(new Date(), sch?.timezone || DEFAULT_DISPLAY_TIMEZONE);
 
-  try {
-    if (parsed.type === "yes_master") {
-      await message.reply({ content: persona.YES_MASTER, ...replyOpts });
-      return;
-    }
+  // EXPLICIT "kurumi" prefix
+  const parsed = parseKurumiLine(content);
+  if (parsed) {
+    try {
+      if (parsed.type === "yes_master") {
+        await message.reply({ content: persona.YES_MASTER, ...replyOpts });
+        enterConversation(gid, uid);
+        return;
+      }
 
-    if (parsed.type === "help") {
-      await message.reply({ content: KURUMI_HELP, ...replyOpts });
-      return;
-    }
+      if (parsed.type === "help") {
+        await message.reply({ content: KURUMI_HELP, ...replyOpts });
+        return;
+      }
 
-    if (parsed.type === "unknown_command") {
-      await message.reply({ content: persona.UNKNOWN_COMMAND, ...replyOpts });
-      return;
-    }
+      if (parsed.type === "unknown_command") {
+        await message.reply({ content: persona.UNKNOWN_COMMAND, ...replyOpts });
+        return;
+      }
 
-    if (parsed.type === "voice") {
-      if (parsed.cmd === "join") {
-        let member = message.member;
-        if (!member) {
-          try {
-            member = await message.guild.members.fetch(message.author.id);
-          } catch (_) {
-            await message.reply({
-              content: "Could not load your member profile. Try again from this server.",
-              ...replyOpts
-            });
-            return;
+      if (parsed.type === "voice") {
+        if (parsed.cmd === "join") {
+          let member = message.member;
+          if (!member) {
+            try {
+              member = await message.guild.members.fetch(message.author.id);
+            } catch (_) {
+              await message.reply({
+                content: "Could not load your member profile. Try again from this server.",
+                ...replyOpts
+              });
+              return;
+            }
           }
+          const r = await voiceJoinFromMember(member);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
         }
-        const r = await voiceJoinFromMember(member);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
+        if (parsed.cmd === "leave") {
+          const r = voiceLeaveGuild(message.guild.id);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.cmd === "status") {
+          await message.reply({ content: voiceStatusText(message.guild.id), ...replyOpts });
+          return;
+        }
+        if (parsed.cmd === "ping") {
+          const ws = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
+          const rt = Date.now() - message.createdTimestamp;
+          await message.reply({
+            content: `Pong. Round trip ~${rt} ms \u00b7 WebSocket ping ~${ws} ms`,
+            ...replyOpts
+          });
+          return;
+        }
       }
-      if (parsed.cmd === "leave") {
-        const r = voiceLeaveGuild(message.guild.id);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.cmd === "status") {
-        await message.reply({ content: voiceStatusText(message.guild.id), ...replyOpts });
-        return;
-      }
-      if (parsed.cmd === "ping") {
-        const ws = Number.isFinite(client.ws.ping) ? client.ws.ping : -1;
-        const rt = Date.now() - message.createdTimestamp;
-        await message.reply({
-          content: `Pong. Round trip ~${rt} ms · WebSocket ping ~${ws} ms`,
-          ...replyOpts
-        });
-        return;
-      }
-    }
 
-    if (parsed.type === "wordle") {
-      const uid = message.author.id;
-      if (parsed.sub === "new") {
-        const r = wordle.startNewGame(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
+      if (parsed.type === "wordle") {
+        if (parsed.sub === "new") {
+          const r = wordle.startNewGame(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "status") {
+          const r = wordle.getStatus(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "guess") {
+          const r = wordle.submitGuess(uid, parsed.word);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "stats") {
+          const r = wordle.getStats(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "share") {
+          const r = wordle.getShare(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "hardmode") {
+          const r = wordle.toggleHardMode(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "colorblind") {
+          const r = wordle.toggleColorblind(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "giveup") {
+          const r = wordle.giveUp(uid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
       }
-      if (parsed.sub === "status") {
-        const r = wordle.getStatus(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "guess") {
-        const r = wordle.submitGuess(uid, parsed.word);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "stats") {
-        const r = wordle.getStats(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "share") {
-        const r = wordle.getShare(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "hardmode") {
-        const r = wordle.toggleHardMode(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "colorblind") {
-        const r = wordle.toggleColorblind(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "giveup") {
-        const r = wordle.giveUp(uid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-    }
 
-    if (parsed.type === "daily") {
-      const gid = message.guild.id;
-      const uid = message.author.id;
-      if (parsed.sub === "status") {
-        await message.reply({
-          content: dailyWordle.dailyStatus(gid, uid),
-          ...replyOpts
-        });
-        return;
+      if (parsed.type === "daily") {
+        if (parsed.sub === "status") {
+          await message.reply({
+            content: dailyWordle.dailyStatus(gid, uid),
+            ...replyOpts
+          });
+          return;
+        }
+        if (parsed.sub === "guess") {
+          const r = dailyWordle.submitDailyGuess(gid, uid, parsed.word);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
+        if (parsed.sub === "leaderboard") {
+          const r = dailyWordle.getLeaderboard(gid);
+          await message.reply({ content: r.text, ...replyOpts });
+          return;
+        }
       }
-      if (parsed.sub === "guess") {
-        const r = dailyWordle.submitDailyGuess(gid, uid, parsed.word);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-      if (parsed.sub === "leaderboard") {
-        const r = dailyWordle.getLeaderboard(gid);
-        await message.reply({ content: r.text, ...replyOpts });
-        return;
-      }
-    }
 
-    if (parsed.type === "chat") {
-      const userId = message.author.id;
-      const guildId = message.guild?.id || null;
-      db.ensureUser(userId, message.author.username);
-      const recentChat = db.getRecentChat(userId, 10);
-      const line = persona.chatReply(parsed.text, { timeLine, userId, recentChat });
+      if (parsed.type === "chat") {
+        await handleChatReply(message, parsed.text, replyOpts, timeLine);
+        enterConversation(gid, uid);
+        return;
+      }
+    } catch (err) {
+      console.error("[kurumi text]", err);
+    }
+    return;
+  }
+
+  // NO explicit "kurumi" prefix — check shorthand modes
+  try {
+    // 1. Conversation enders
+    if (isInConversation(gid, uid) && isConvEnd(content)) {
+      exitConversation(gid, uid);
+      const line = persona.chatReply(content, { timeLine, userId: uid, recentChat: db.getRecentChat(uid, 10) });
       await message.reply({ content: line, ...replyOpts });
-      const sent = sentiment.analyze(parsed.text);
-      const intent = persona.detectIntent(parsed.text);
-      db.logChat(userId, guildId, parsed.text, line, sent.score, intent.type);
-      const conv = persona.getConv(userId);
-      const topicIntent = (intent.type === "none" && conv && conv.lastIntent) ? conv.lastIntent : intent.type;
-      persona.setConv(userId, { lastIntent: topicIntent, lastBotReply: line, lastUserMsg: parsed.text });
+      const sent = sentiment.analyze(content);
+      const intent = persona.detectIntent(content);
+      db.logChat(uid, gid, content, line, sent.score, intent.type);
+      return;
+    }
+
+    // 2. Wordle shorthand (exactly 5 letters + valid word + active game)
+    const wordleGame = db.getWordleGame(uid);
+    if (wordleGame && !wordleGame.solved && !wordleGame.lost) {
+      const w = content.toLowerCase().replace(/[^a-z]/g, "");
+      if (w.length === 5 && wordle.isValidWord(w)) {
+        const r = wordle.submitGuess(uid, w);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+    }
+
+    // 3. Daily shorthand
+    if (dailyWordle.hasActiveDaily && dailyWordle.hasActiveDaily(gid, uid)) {
+      const w = content.toLowerCase().replace(/[^a-z]/g, "");
+      if (w.length === 5 && wordle.isValidWord(w)) {
+        const r = dailyWordle.submitDailyGuess(gid, uid, w);
+        await message.reply({ content: r.text, ...replyOpts });
+        return;
+      }
+    }
+
+    // 4. Conversation mode chat
+    if (isInConversation(gid, uid)) {
+      await handleChatReply(message, content, replyOpts, timeLine);
+      bumpConversation(gid, uid);
       return;
     }
   } catch (err) {
-    console.error("[kurumi text]", err);
+    console.error("[kurumi text shorthand]", err);
   }
 });
 
