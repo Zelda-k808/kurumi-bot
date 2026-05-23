@@ -5,3 +5,6 @@ data/ollama-tunnel-url.txt
 data/render-ollama-env.txt
 data/ollama-tunnel.log
 data/ollama-tunnel.log.err
+data/*.db
+data/*.db-wal
+data/*.db-shm

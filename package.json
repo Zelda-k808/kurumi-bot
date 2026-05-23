@@ -13,16 +13,20 @@
     "ollama:remote": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-ollama-remote.ps1",
     "render:ollama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply-render-ollama.ps1",
     "gaming:generate": "node scripts/generate-gaming-franchises.js",
-    "gaming:cache": "node scripts/build-gaming-cache.js"
+    "gaming:cache": "node scripts/build-gaming-cache.js",
+    "migrate:turso": "node scripts/migrate-to-turso.js"
   },
   "engines": {
     "node": "20.x"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
+    "@libsql/client": "^0.15.0",
     "discord.js": "^14.26.2",
     "dotenv": "^17.4.1",
-    "sentiment": "^5.0.2",
+    "sentiment": "^5.0.2"
+  },
+  "devDependencies": {
     "better-sqlite3": "^11.9.1"
   }
 }

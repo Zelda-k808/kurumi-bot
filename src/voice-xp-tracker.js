@@ -14,13 +14,13 @@ function shouldTrack(member) {
   return true;
 }
 
-function creditMinutes(guildId, userId, username, minutes) {
+async function creditMinutes(guildId, userId, username, minutes) {
   if (minutes <= 0) return;
   const xp = minutes * levels.XP_PER_MINUTE;
-  db.addVoiceXp(guildId, userId, username, xp, minutes * 60);
+  await db.addVoiceXp(guildId, userId, username, xp, minutes * 60);
 }
 
-function startSession(guildId, userId, username) {
+async function startSession(guildId, userId, username) {
   const key = sessionKey(guildId, userId);
   const now = Date.now();
   if (sessions.has(key)) return;
@@ -30,30 +30,30 @@ function startSession(guildId, userId, username) {
     joinedAt: now,
     lastCreditAt: now,
   });
-  db.ensureUser(userId, username);
-  db.ensureUserVoiceXp(guildId, userId, username);
+  await db.ensureUser(userId, username);
+  await db.ensureUserVoiceXp(guildId, userId, username);
 }
 
-function endSession(guildId, userId, username) {
+async function endSession(guildId, userId, username) {
   const key = sessionKey(guildId, userId);
   const s = sessions.get(key);
   if (!s) return;
   sessions.delete(key);
   const elapsedMs = Date.now() - s.lastCreditAt;
   const minutes = Math.floor(elapsedMs / 60_000);
-  creditMinutes(guildId, userId, username, minutes);
+  await creditMinutes(guildId, userId, username, minutes);
 }
 
-function tickSession(s, username) {
+async function tickSession(s, username) {
   const now = Date.now();
   const elapsedMs = now - s.lastCreditAt;
   const minutes = Math.floor(elapsedMs / 60_000);
   if (minutes < 1) return;
-  creditMinutes(s.guildId, s.userId, username, minutes);
+  await creditMinutes(s.guildId, s.userId, username, minutes);
   s.lastCreditAt += minutes * 60_000;
 }
 
-function runTick(client) {
+async function runTick(client) {
   for (const s of sessions.values()) {
     const guild = client.guilds.cache.get(s.guildId);
     if (!guild) {
@@ -62,14 +62,14 @@ function runTick(client) {
     }
     const vs = guild.voiceStates.cache.get(s.userId);
     if (!vs?.channelId || vs.member?.user?.bot) {
-      endSession(s.guildId, s.userId, vs?.member?.user?.username);
+      await endSession(s.guildId, s.userId, vs?.member?.user?.username);
       continue;
     }
-    tickSession(s, vs.member.user.username);
+    await tickSession(s, vs.member.user.username);
   }
 }
 
-function handleVoiceStateUpdate(oldState, newState) {
+async function handleVoiceStateUpdate(oldState, newState) {
   const member = newState.member || oldState.member;
   if (member?.user?.bot) return;
   if (!newState.guild) return;
@@ -82,45 +82,43 @@ function handleVoiceStateUpdate(oldState, newState) {
   const nowIn = newState.channelId;
 
   if (!wasIn && nowIn) {
-    startSession(guildId, userId, username);
+    await startSession(guildId, userId, username);
     return;
   }
   if (wasIn && !nowIn) {
-    endSession(guildId, userId, username);
+    await endSession(guildId, userId, username);
     return;
   }
   if (wasIn && nowIn && wasIn !== nowIn) {
-    endSession(guildId, userId, username);
-    startSession(guildId, userId, username);
+    await endSession(guildId, userId, username);
+    await startSession(guildId, userId, username);
   }
 }
 
-function syncGuildOnReady(guild) {
+async function syncGuildOnReady(guild) {
   for (const vs of guild.voiceStates.cache.values()) {
     if (shouldTrack(vs.member)) {
-      startSession(guild.id, vs.id, vs.member.user.username);
+      await startSession(guild.id, vs.id, vs.member.user.username);
     }
   }
 }
 
 function attach(client) {
   client.on("voiceStateUpdate", (oldState, newState) => {
-    try {
-      handleVoiceStateUpdate(oldState, newState);
-    } catch (e) {
+    handleVoiceStateUpdate(oldState, newState).catch((e) => {
       console.error("[voice-xp] voiceStateUpdate", e);
-    }
+    });
   });
 
-  client.once("ready", () => {
+  client.once("ready", async () => {
     for (const guild of client.guilds.cache.values()) {
-      syncGuildOnReady(guild);
+      await syncGuildOnReady(guild);
     }
     console.log(`[voice-xp] tracking · ${sessions.size} active voice session(s)`);
   });
 
   setInterval(() => {
-    runTick(client);
+    runTick(client).catch((e) => console.error("[voice-xp] tick", e));
   }, 60_000);
 }
 

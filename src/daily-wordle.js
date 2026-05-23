@@ -6,50 +6,50 @@ const db = require("./database");
 const DEFAULT_TZ = process.env.WORDLE_DAILY_TZ || "UTC";
 const DAILY_HOUR = Number.parseInt(process.env.WORDLE_DAILY_HOUR || "8", 10);
 
-function getSchedule(guildId) {
-  const row = db.getDailySchedule(guildId);
+async function getSchedule(guildId) {
+  const row = await db.getDailySchedule(guildId);
   if (!row) return null;
   return { channelId: row.channel_id, timezone: row.timezone, lastPostedDate: row.last_posted || "" };
 }
 
-function setSchedule(guildId, channelId, timezone) {
+async function setSchedule(guildId, channelId, timezone) {
   const tz = (timezone && String(timezone).trim()) || DEFAULT_TZ;
   if (!getPartsInZone(new Date(), tz)) throw new Error("Invalid IANA timezone (example: Asia/Tokyo, America/New_York).");
-  db.setDailySchedule(guildId, channelId, tz, DAILY_HOUR);
+  await db.setDailySchedule(guildId, channelId, tz, DAILY_HOUR);
 }
 
-function clearSchedule(guildId) {
-  db.deleteDailySchedule(guildId);
+async function clearSchedule(guildId) {
+  await db.deleteDailySchedule(guildId);
 }
 
-function getTodayAnswer(guildId, timezone) {
+async function getTodayAnswer(guildId, timezone) {
   const parts = getPartsInZone(new Date(), timezone);
   if (!parts) return null;
-  let ans = db.getDailyAnswer(guildId, parts.ymd);
+  let ans = await db.getDailyAnswer(guildId, parts.ymd);
   if (!ans) {
     const word = wordle.pickRandomAnswer();
-    db.setDailyAnswer(guildId, parts.ymd, word);
+    await db.setDailyAnswer(guildId, parts.ymd, word);
     ans = { answer: word };
   }
   return { word: ans.answer, ymd: parts.ymd };
 }
 
-function ensureUserDaily(guildId, userId, ymd) {
-  let prog = db.getDailyProgress(guildId, ymd, userId);
+async function ensureUserDaily(guildId, userId, ymd) {
+  let prog = await db.getDailyProgress(guildId, ymd, userId);
   if (!prog) {
     prog = { guesses: [], solved: false, lost: false, guess_count: 0, solved_at: null };
-    db.setDailyProgress(guildId, ymd, userId, prog);
+    await db.setDailyProgress(guildId, ymd, userId, prog);
   }
   return prog;
 }
 
-function submitDailyGuess(guildId, userId, rawGuess) {
-  const sch = getSchedule(guildId);
+async function submitDailyGuess(guildId, userId, rawGuess) {
+  const sch = await getSchedule(guildId);
   if (!sch) {
     return { ok: false, text: "This server has **no daily Wordle channel** yet. Ask a moderator to run **`/dailywordle setup`**." };
   }
 
-  const today = getTodayAnswer(guildId, sch.timezone);
+  const today = await getTodayAnswer(guildId, sch.timezone);
   if (!today) return { ok: false, text: "Could not resolve today's puzzle (timezone issue)." };
 
   const guess = String(rawGuess || "")
@@ -62,7 +62,7 @@ function submitDailyGuess(guildId, userId, rawGuess) {
     return { ok: false, text: "That word is **not** in my dictionary for this game, Master." };
   }
 
-  const game = ensureUserDaily(guildId, userId, today.ymd);
+  const game = await ensureUserDaily(guildId, userId, today.ymd);
   if (game.solved) {
     return { ok: true, text: "You have **already solved** today's daily word, Master. Fufu… await tomorrow's strike of eight." };
   }
@@ -78,9 +78,9 @@ function submitDailyGuess(guildId, userId, rawGuess) {
   guessesArr.push({ word: guess, grades });
   game.guesses = JSON.stringify(guessesArr);
   game.guess_count = guessesArr.length;
-  db.setDailyProgress(guildId, today.ymd, userId, game);
+  await db.setDailyProgress(guildId, today.ymd, userId, game);
 
-  const prefs = wordle.getOrCreatePrefs(userId);
+  const prefs = await wordle.getOrCreatePrefs(userId);
   const row = `${wordle.gradeToEmojis(grades, prefs.colorblind)} \`${guess.toUpperCase()}\``;
   const board = guessesArr
     .map(({ word, grades: g }) => `${wordle.gradeToEmojis(g, prefs.colorblind)} \`${word.toUpperCase()}\``)
@@ -90,7 +90,7 @@ function submitDailyGuess(guildId, userId, rawGuess) {
   if (guess === today.word) {
     game.solved = true;
     game.solved_at = Date.now();
-    db.setDailyProgress(guildId, today.ymd, userId, game);
+    await db.setDailyProgress(guildId, today.ymd, userId, game);
     return {
       ok: true,
       text: `${row}\n\n**Splendid**, Master — you solved **today's** daily in **${guessesArr.length}** try/tries! 🎉\n\n${board}\n\n**Keyboard**\n${kb}`
@@ -99,7 +99,7 @@ function submitDailyGuess(guildId, userId, rawGuess) {
 
   if (guessesArr.length >= wordle.MAX_GUESSES) {
     game.lost = true;
-    db.setDailyProgress(guildId, today.ymd, userId, game);
+    await db.setDailyProgress(guildId, today.ymd, userId, game);
     return {
       ok: true,
       text: `${row}\n\nThe sands have run out, Master. Today's word was **${today.word.toUpperCase()}**.\n\n${board}\n\n**Keyboard**\n${kb}`
@@ -112,18 +112,18 @@ function submitDailyGuess(guildId, userId, rawGuess) {
   };
 }
 
-function dailyStatus(guildId, userId) {
-  const sch = getSchedule(guildId);
+async function dailyStatus(guildId, userId) {
+  const sch = await getSchedule(guildId);
   if (!sch) {
     return "No **daily Wordle** is configured here. A moderator may use **`/dailywordle setup`** to begin.";
   }
-  const today = getTodayAnswer(guildId, sch.timezone);
+  const today = await getTodayAnswer(guildId, sch.timezone);
   if (!today) return "Could not read today's puzzle.";
 
-  const game = db.getDailyProgress(guildId, today.ymd, userId);
+  const game = await db.getDailyProgress(guildId, today.ymd, userId);
   const guessesArr = game ? JSON.parse(game.guesses || "[]") : [];
   const n = guessesArr.length;
-  const prefs = wordle.getOrCreatePrefs(userId);
+  const prefs = await wordle.getOrCreatePrefs(userId);
   const lines = guessesArr.length
     ? guessesArr
         .map(({ word, grades }) => `${wordle.gradeToEmojis(grades, prefs.colorblind)} \`${word.toUpperCase()}\``)
@@ -135,15 +135,15 @@ function dailyStatus(guildId, userId) {
   return `**Daily Wordle** (${today.ymd}) — you have used **${n}/${wordle.MAX_GUESSES}** guesses.\n${lines}${tail}`;
 }
 
-function getLeaderboard(guildId) {
-  const sch = getSchedule(guildId);
+async function getLeaderboard(guildId) {
+  const sch = await getSchedule(guildId);
   if (!sch) {
     return { ok: false, text: "This server has **no daily Wordle** configured. A moderator may use **`/dailywordle setup`** to begin." };
   }
-  const today = getTodayAnswer(guildId, sch.timezone);
+  const today = await getTodayAnswer(guildId, sch.timezone);
   if (!today) return { ok: false, text: "Could not resolve today's puzzle." };
 
-  const entries = db.getDailyLeaderboard(guildId, today.ymd);
+  const entries = await db.getDailyLeaderboard(guildId, today.ymd);
   if (!entries.length) {
     return { ok: true, text: `**Daily Wordle Leaderboard** (${today.ymd})\n\n_No one has played today's daily yet._` };
   }
@@ -163,12 +163,12 @@ function getLeaderboard(guildId) {
  * Call once per minute from the bot client.
  * @param {import("discord.js").Client} client
  */
-function hasActiveDaily(guildId, userId) {
-  const sch = getSchedule(guildId);
+async function hasActiveDaily(guildId, userId) {
+  const sch = await getSchedule(guildId);
   if (!sch) return false;
-  const today = getTodayAnswer(guildId, sch.timezone);
+  const today = await getTodayAnswer(guildId, sch.timezone);
   if (!today) return false;
-  const game = db.getDailyProgress(guildId, today.ymd, userId);
+  const game = await db.getDailyProgress(guildId, today.ymd, userId);
   if (!game) return false;
   if (game.solved || game.lost) return false;
   const guessesArr = JSON.parse(game.guesses || "[]");
@@ -177,7 +177,7 @@ function hasActiveDaily(guildId, userId) {
 
 async function tickDailyPost(client) {
   const now = new Date();
-  const schedules = db.getAllSchedules();
+  const schedules = await db.getAllSchedules();
   for (const schRow of schedules) {
     const guildId = schRow.guild_id;
     const parts = getPartsInZone(now, schRow.timezone);
@@ -186,9 +186,9 @@ async function tickDailyPost(client) {
     if (parts.hour !== DAILY_HOUR || parts.minute !== 0) continue;
     if (schRow.last_posted === parts.ymd) continue;
 
-    let ans = db.getDailyAnswer(guildId, parts.ymd);
+    let ans = await db.getDailyAnswer(guildId, parts.ymd);
     if (!ans) {
-      db.setDailyAnswer(guildId, parts.ymd, wordle.pickRandomAnswer());
+      await db.setDailyAnswer(guildId, parts.ymd, wordle.pickRandomAnswer());
     }
 
     const guild = client.guilds.cache.get(guildId);
@@ -217,7 +217,7 @@ async function tickDailyPost(client) {
 
     try {
       await channel.send({ embeds: [embed] });
-      db.setDailySchedule(guildId, schRow.channel_id, schRow.timezone, DAILY_HOUR);
+      await db.setDailySchedule(guildId, schRow.channel_id, schRow.timezone, DAILY_HOUR);
     } catch (e) {
       console.error("[daily-wordle] post failed", guildId, e);
     }

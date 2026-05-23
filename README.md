@@ -41,6 +41,44 @@ npm install
 npm start
 ```
 
+### Cloud database (Turso) — shared between laptop and Render
+
+By default the bot uses a **local SQLite file** (`data/kurumi.db`). To share data between your laptop and Render (or any second instance), set up a free [Turso](https://turso.tech) database:
+
+1. Sign up at [turso.tech](https://turso.tech) (free, GitHub login).
+2. Install the CLI and create a database:
+
+```bash
+npm install -g @turso/cli
+turso auth login
+turso db create kurumi-bot
+```
+
+3. Get your credentials:
+
+```bash
+turso db show kurumi-bot --url        # → libsql://kurumi-bot-yourname.turso.io
+turso db tokens create kurumi-bot     # → your auth token
+```
+
+4. Add to `.env`:
+
+```env
+TURSO_DATABASE_URL=libsql://kurumi-bot-yourname.turso.io
+TURSO_AUTH_TOKEN=your-token-here
+```
+
+5. **Migrate existing data** (if you have a local `data/kurumi.db`):
+
+```bash
+npm run migrate:turso
+```
+
+6. Add the same `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` to **Render Environment** (dashboard → your service → Environment).
+
+When `TURSO_DATABASE_URL` is not set, the bot falls back to local SQLite — no cloud account needed for basic development.
+
+
 ### Kurumi chat with Ollama (local LLM)
 
 Text chat (`kurumi hi`, conversation mode) uses **Ollama** when it is running. Without Ollama, replies fall back to scripted persona lines.
@@ -178,5 +216,65 @@ pm2 startup
 ```
 
 This gives near-true 24/7 on free tier.
+
+## 7) Laptop-primary with Render failover
+
+Run the bot on **your laptop** day-to-day. When you shut down, close the lid, or stop the process, **Render automatically takes over** until you start the bot again.
+
+### How it works
+
+1. Your **laptop** runs the bot normally and sends a heartbeat (`POST /heartbeat`) to Render every 30 seconds.
+2. **Render** starts in **standby mode** (`RENDER_STANDBY=1`) — HTTP server is up but the Discord gateway is **not** connected.
+3. When Render hasn't received a heartbeat for 60 seconds → it logs into Discord and takes over.
+4. When your laptop comes back and starts sending heartbeats again → Render gracefully disconnects after a 5-second handoff delay.
+5. If you **Ctrl+C** or stop the bot manually, it sends a `shutdown` heartbeat so Render takes over **immediately** (no 60-second wait).
+
+### Setup
+
+**On your laptop (`.env`):**
+
+```env
+# The URL of your Render service
+RENDER_HEARTBEAT_URL=https://kurumi-voice-bot.onrender.com
+```
+
+**On Render (Environment or `render.yaml`):**
+
+| Key | Value |
+|-----|-------|
+| `RENDER_STANDBY` | `1` |
+| `DISCORD_TOKEN` | *(your bot token)* |
+
+That's it. Both instances use the same `DISCORD_TOKEN`. Discord only allows one gateway connection per token — the failover system ensures only one is connected at a time.
+
+### Checking status
+
+Visit `https://your-service.onrender.com/failover-status` in a browser to see:
+
+```json
+{
+  "mode": "standby",
+  "standbyEnabled": true,
+  "lastHeartbeat": "2026-05-24T00:00:00.000Z",
+  "lastHeartbeatAgeMs": 12345,
+  "staleTresholdMs": 60000,
+  "laptopAlive": true
+}
+```
+
+### Tuning (optional env vars)
+
+| Variable | Default | Where | Purpose |
+|----------|---------|-------|---------|
+| `HEARTBEAT_INTERVAL_MS` | `30000` | Laptop | How often to send heartbeats |
+| `FAILOVER_STALE_MS` | `60000` | Render | How long before a heartbeat is "stale" |
+| `FAILOVER_CHECK_MS` | `10000` | Render | How often to check the heartbeat |
+| `FAILOVER_HANDOFF_MS` | `5000` | Render | Delay before disconnecting when laptop returns |
+
+### Important: keep Render awake
+
+Render free plan **spins down** after ~15 min of no HTTP traffic. The laptop heartbeats count as HTTP traffic and will keep it awake. But if your laptop is off for a long time and Render sleeps, it may take ~30s to cold-start when it wakes up again.
+
+To keep Render always ready, use a free uptime monitor (UptimeRobot, cron-job.org) to `GET /ping` every 10 minutes as a backup.
 
 The **`render.yaml`** in this repo is the optional blueprint for Option A above.

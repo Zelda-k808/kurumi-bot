@@ -24,7 +24,7 @@ async function buildLeaderboardPayload(client, guildId, opts = {}) {
 
   const page = Math.max(1, opts.page || 1);
   const offset = (page - 1) * PAGE_SIZE;
-  const total = db.getVoiceLeaderboardCount(guildId);
+  const total = await db.getVoiceLeaderboardCount(guildId);
 
   if (total === 0) {
     return {
@@ -42,7 +42,7 @@ async function buildLeaderboardPayload(client, guildId, opts = {}) {
 
   const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, maxPage);
-  const rows = db.getVoiceLeaderboard(guildId, PAGE_SIZE, offset);
+  const rows = await db.getVoiceLeaderboard(guildId, PAGE_SIZE, offset);
 
   const embeds = [];
   let rank = offset + 1;
@@ -90,7 +90,7 @@ async function buildLeaderboardPayload(client, guildId, opts = {}) {
 }
 
 async function buildUserCard(client, guildId, userId) {
-  const row = db.getUserVoiceXp(guildId, userId);
+  const row = await db.getUserVoiceXp(guildId, userId);
   if (!row || row.total_xp <= 0) {
     return {
       embeds: [
@@ -103,7 +103,7 @@ async function buildUserCard(client, guildId, userId) {
   }
 
   const user = await client.users.fetch(userId).catch(() => null);
-  const rank = db.getUserVoiceRank(guildId, userId);
+  const rank = await db.getUserVoiceRank(guildId, userId);
   const p = levels.progressInLevel(row.total_xp);
   const bar = levels.progressBar(p.need > 0 ? p.inLevel / p.need : 1);
   const pct = p.need > 0 ? Math.floor((p.inLevel / p.need) * 100) : 100;

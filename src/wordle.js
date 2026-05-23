@@ -189,8 +189,8 @@ function validateHardMode(guesses, newGuess) {
   return { ok: true };
 }
 
-function recordResult(userId, won, guessesUsed, hardMode) {
-  const s = db.getWordleStats(userId);
+async function recordResult(userId, won, guessesUsed, hardMode) {
+  const s = await db.getWordleStats(userId);
   s.games_played++;
   if (hardMode) s.hard_played++;
   if (won) {
@@ -202,7 +202,7 @@ function recordResult(userId, won, guessesUsed, hardMode) {
   } else {
     s.current_streak = 0;
   }
-  db.setWordleStats(userId, s);
+  await db.setWordleStats(userId, s);
 }
 
 function buildShare(game) {
@@ -211,11 +211,11 @@ function buildShare(game) {
   return [header, ...lines].join("\n");
 }
 
-function startNewGame(userId) {
-  const p = db.getPrefs(userId);
+async function startNewGame(userId) {
+  const p = await db.getPrefs(userId);
   const answer = randomAnswer();
   const game = { answer, guesses: [], hard_mode: p.hard_mode, colorblind: p.colorblind };
-  db.setWordleGame(userId, game);
+  await db.setWordleGame(userId, game);
   const modeLine = p.hard_mode ? "\n🎯 **Hard mode** is on — revealed hints must be used." : "";
   const cbLine = p.colorblind ? "\n🔲 **Colorblind mode** is on (🟦🟧⬛)." : "";
   return {
@@ -224,8 +224,8 @@ function startNewGame(userId) {
   };
 }
 
-function getStatus(userId) {
-  const game = db.getWordleGame(userId);
+async function getStatus(userId) {
+  const game = await db.getWordleGame(userId);
   if (!game) return { text: "No active game. Start with **`/wordle new`**.", ephemeral: true };
   return {
     text: `**Your Wordle** (${game.guesses.length}/${MAX_GUESSES})${game.hard_mode ? " 🎯 Hard" : ""}${game.colorblind ? " 🔲" : ""}\n${formatBoard(game)}`,
@@ -233,8 +233,8 @@ function getStatus(userId) {
   };
 }
 
-function submitGuess(userId, raw) {
-  const game = db.getWordleGame(userId);
+async function submitGuess(userId, raw) {
+  const game = await db.getWordleGame(userId);
   if (!game) return { text: "No active game. Use **`/wordle new`** first.", ephemeral: true };
 
   const guess = String(raw || "")
@@ -250,16 +250,17 @@ function submitGuess(userId, raw) {
 
   const grades = gradeGuess(game.answer, guess);
   game.guesses.push({ word: guess, grades });
-  db.setWordleGame(userId, game);
+  await db.setWordleGame(userId, game);
 
   const row = `${gradeToEmojis(grades, game.colorblind)} \`${guess.toUpperCase()}\``;
   const board = formatBoard(game);
 
   if (guess === game.answer) {
-    db.setWordleLastGame(userId, { answer: game.answer, guesses: game.guesses, won: true, givenUp: false, colorblind: game.colorblind });
-    recordResult(userId, true, game.guesses.length, game.hard_mode);
-    db.deleteWordleGame(userId);
-    const share = buildShare(db.getWordleLastGame(userId));
+    await db.setWordleLastGame(userId, { answer: game.answer, guesses: game.guesses, won: true, givenUp: false, colorblind: game.colorblind });
+    await recordResult(userId, true, game.guesses.length, game.hard_mode);
+    await db.deleteWordleGame(userId);
+    const lastGame = await db.getWordleLastGame(userId);
+    const share = buildShare(lastGame);
     return {
       text: `${row}\n\n**Solved** in **${game.guesses.length}** guess(es)! 🎉\n\n${board}\n\n**Share:**\n\`\`\`\n${share}\n\`\`\``,
       ephemeral: true,
@@ -268,9 +269,9 @@ function submitGuess(userId, raw) {
 
   if (game.guesses.length >= MAX_GUESSES) {
     const ans = game.answer.toUpperCase();
-    db.setWordleLastGame(userId, { answer: game.answer, guesses: game.guesses, won: false, givenUp: false, colorblind: game.colorblind });
-    recordResult(userId, false, 0, game.hard_mode);
-    db.deleteWordleGame(userId);
+    await db.setWordleLastGame(userId, { answer: game.answer, guesses: game.guesses, won: false, givenUp: false, colorblind: game.colorblind });
+    await recordResult(userId, false, 0, game.hard_mode);
+    await db.deleteWordleGame(userId);
     return {
       text: `${row}\n\n**Out of guesses.** The word was **${ans}**.\n\n${board}`,
       ephemeral: true,
@@ -283,21 +284,21 @@ function submitGuess(userId, raw) {
   };
 }
 
-function giveUp(userId) {
-  const game = db.getWordleGame(userId);
+async function giveUp(userId) {
+  const game = await db.getWordleGame(userId);
   if (!game) return { text: "No active game to surrender.", ephemeral: true };
   const ans = game.answer.toUpperCase();
-  db.setWordleLastGame(userId, { answer: game.answer, guesses: game.guesses, won: false, givenUp: true, colorblind: game.colorblind });
-  recordResult(userId, false, 0, game.hard_mode);
-  db.deleteWordleGame(userId);
+  await db.setWordleLastGame(userId, { answer: game.answer, guesses: game.guesses, won: false, givenUp: true, colorblind: game.colorblind });
+  await recordResult(userId, false, 0, game.hard_mode);
+  await db.deleteWordleGame(userId);
   return {
     text: `You **gave up**. The word was **${ans}**.\n\n${formatBoard(game)}`,
     ephemeral: true,
   };
 }
 
-function getStats(userId) {
-  const s = db.getWordleStats(userId);
+async function getStats(userId) {
+  const s = await db.getWordleStats(userId);
   const winRate = s.games_played ? Math.round((s.games_won / s.games_played) * 100) : 0;
   const hardRate = s.hard_played ? Math.round((s.hard_won / s.hard_played) * 100) : 0;
   const max = Math.max(...s.guess_dist, 1);
@@ -319,25 +320,25 @@ function getStats(userId) {
   };
 }
 
-function getShare(userId) {
-  const g = db.getWordleLastGame(userId);
+async function getShare(userId) {
+  const g = await db.getWordleLastGame(userId);
   if (!g) return { text: "No completed game to share. Finish a game first!", ephemeral: true };
   const share = buildShare(g);
   return { text: `\`\`\`\n${share}\n\`\`\``, ephemeral: false };
 }
 
-function toggleHardMode(userId) {
-  const p = db.getPrefs(userId);
+async function toggleHardMode(userId) {
+  const p = await db.getPrefs(userId);
   p.hard_mode = !p.hard_mode;
-  db.setPrefs(userId, p);
+  await db.setPrefs(userId, p);
   const state = p.hard_mode ? "ON" : "OFF";
   return { text: `Hard mode is now **${state}** for your next game.`, ephemeral: true };
 }
 
-function toggleColorblind(userId) {
-  const p = db.getPrefs(userId);
+async function toggleColorblind(userId) {
+  const p = await db.getPrefs(userId);
   p.colorblind = !p.colorblind;
-  db.setPrefs(userId, p);
+  await db.setPrefs(userId, p);
   const state = p.colorblind ? "ON" : "OFF";
   return { text: `Colorblind mode is now **${state}** (🟦🟧⬛).`, ephemeral: true };
 }

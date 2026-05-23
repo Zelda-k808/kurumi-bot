@@ -34,6 +34,7 @@ const voiceXpTracker = require("./voice-xp-tracker");
 const kurumiLeaderboard = require("./kurumi-leaderboard");
 const chatContext = require("./chat-context");
 const chatResearch = require("./chat-research");
+const failover = require("./failover");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -71,11 +72,53 @@ function startKeepAliveHttp() {
 
   const server = http.createServer((req, res) => {
     const path = req.url?.split("?")[0] ?? "/";
+
+    // ── Existing keep-alive routes ──
     if (req.method === "GET" && (path === "/" || path === "/ping")) {
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("ok");
       return;
     }
+
+    // ── Failover: heartbeat receiver (Render side) ──
+    if (req.method === "POST" && path === "/heartbeat") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const data = JSON.parse(body);
+          const ts = typeof data.timestamp === "number" ? data.timestamp : Date.now();
+          failover.updateHeartbeat(ts);
+
+          if (data.status === "shutdown") {
+            console.log("[failover] laptop sent shutdown signal — will activate soon");
+            // Force heartbeat to epoch so shouldActivate() is true on next check
+            failover.updateHeartbeat(0);
+          } else if (failover.getMode() === "active") {
+            // Laptop is back — schedule stand-down
+            failover.scheduleStandDown(async () => {
+              console.log("[failover] deactivating Render bot (laptop took over)");
+              try { client.destroy(); } catch (_) {}
+            });
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, mode: failover.getMode() }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "invalid JSON" }));
+        }
+      });
+      return;
+    }
+
+    // ── Failover: status endpoint for debugging ──
+    if (req.method === "GET" && path === "/failover-status") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(failover.getStatus(), null, 2));
+      return;
+    }
+
     res.writeHead(404).end();
   });
 
@@ -85,13 +128,77 @@ function startKeepAliveHttp() {
   });
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`HTTP keep-alive 0.0.0.0:${port} (GET / /ping)`);
+    console.log(`HTTP keep-alive 0.0.0.0:${port} (GET / /ping /failover-status, POST /heartbeat)`);
   });
 
   return server;
 }
 
 startKeepAliveHttp();
+
+/* ───────────── Heartbeat sender (laptop → Render) ───────────── */
+const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS, 10) || 30_000;
+const RENDER_HEARTBEAT_URL = (process.env.RENDER_HEARTBEAT_URL || "").trim();
+
+function startHeartbeatSender() {
+  if (!RENDER_HEARTBEAT_URL) return;
+  // Don't send heartbeats FROM Render TO itself
+  if (process.env.RENDER) return;
+
+  const url = RENDER_HEARTBEAT_URL.replace(/\/+$/, "") + "/heartbeat";
+  console.log(`[heartbeat] sending to ${url} every ${HEARTBEAT_INTERVAL_MS}ms`);
+
+  async function sendHeartbeat(status) {
+    const payload = JSON.stringify({ status: status || "alive", timestamp: Date.now() });
+    try {
+      const { hostname, port, pathname, protocol } = new URL(url);
+      const mod = protocol === "https:" ? require("https") : require("http");
+      await new Promise((resolve, reject) => {
+        const req = mod.request(
+          {
+            hostname,
+            port: port || (protocol === "https:" ? 443 : 80),
+            path: pathname,
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+            timeout: 10_000,
+          },
+          (res) => {
+            res.resume(); // drain
+            resolve();
+          }
+        );
+        req.on("error", reject);
+        req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+        req.write(payload);
+        req.end();
+      });
+    } catch (err) {
+      console.warn(`[heartbeat] failed: ${err.message}`);
+    }
+  }
+
+  // Send an initial heartbeat immediately
+  sendHeartbeat("alive");
+
+  const timer = setInterval(() => sendHeartbeat("alive"), HEARTBEAT_INTERVAL_MS);
+
+  // On graceful shutdown, tell Render to take over immediately
+  function onShutdown(signal) {
+    console.log(`[heartbeat] ${signal} received — sending shutdown heartbeat`);
+    clearInterval(timer);
+    sendHeartbeat("shutdown").finally(() => {
+      process.exit(0);
+    });
+  }
+
+  process.on("SIGINT", () => onShutdown("SIGINT"));
+  process.on("SIGTERM", () => onShutdown("SIGTERM"));
+
+  return timer;
+}
+
+startHeartbeatSender();
 
 const token = (process.env.DISCORD_TOKEN || "").trim();
 if (!token) {
@@ -401,7 +508,7 @@ client.once("ready", async () => {
   } catch (err) {
     console.error("Command registration failed:", err);
   }
-  db.init();
+  await db.init();
   wordle.loadWordList().catch((e) => console.error("[wordle] loadWordList", e));
   startVoiceHealthLoop();
   setInterval(() => {
@@ -490,8 +597,8 @@ function isConvEnd(text) {
 async function handleChatReply(message, text, replyOpts, timeLine) {
   const userId = message.author.id;
   const guildId = message.guild?.id || null;
-  db.ensureUser(userId, message.author.username);
-  const recentChat = db.getRecentChat(userId, 24);
+  await db.ensureUser(userId, message.author.username);
+  const recentChat = await db.getRecentChat(userId, 24);
 
   const { query: resolvedQuery } = chatContext.resolveQuery(text, recentChat);
   const recap = chatContext.buildConversationRecap(recentChat, 14);
@@ -527,7 +634,7 @@ async function handleChatReply(message, text, replyOpts, timeLine) {
   await message.reply({ content: line, ...replyOpts });
   const sent = sentiment.analyze(text);
   const intent = persona.detectIntent(text);
-  db.logChat(userId, guildId, text, line, sent.score, intent.type);
+  await db.logChat(userId, guildId, text, line, sent.score, intent.type);
   const conv = persona.getConv(userId);
   const genericSocial = ["greeting", "thanks", "love", "boredom", "excitement"].includes(intent.type);
   const topicIntent = (intent.type === "none" && conv && conv.lastIntent) ? conv.lastIntent
@@ -547,7 +654,7 @@ client.on("messageCreate", async (message) => {
   const uid = message.author.id;
   const gid = message.guild.id;
   const replyOpts = { allowedMentions: { repliedUser: false } };
-  const sch = dailyWordle.getSchedule(message.guild.id);
+  const sch = await dailyWordle.getSchedule(message.guild.id);
   const timeLine = formatTimeAmPmVerbose(new Date(), sch?.timezone || DEFAULT_DISPLAY_TIMEZONE);
 
   // EXPLICIT "kurumi" prefix
@@ -610,42 +717,42 @@ client.on("messageCreate", async (message) => {
 
       if (parsed.type === "wordle") {
         if (parsed.sub === "new") {
-          const r = wordle.startNewGame(uid);
+          const r = await wordle.startNewGame(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "status") {
-          const r = wordle.getStatus(uid);
+          const r = await wordle.getStatus(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "guess") {
-          const r = wordle.submitGuess(uid, parsed.word);
+          const r = await wordle.submitGuess(uid, parsed.word);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "stats") {
-          const r = wordle.getStats(uid);
+          const r = await wordle.getStats(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "share") {
-          const r = wordle.getShare(uid);
+          const r = await wordle.getShare(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "hardmode") {
-          const r = wordle.toggleHardMode(uid);
+          const r = await wordle.toggleHardMode(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "colorblind") {
-          const r = wordle.toggleColorblind(uid);
+          const r = await wordle.toggleColorblind(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "giveup") {
-          const r = wordle.giveUp(uid);
+          const r = await wordle.giveUp(uid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
@@ -667,18 +774,18 @@ client.on("messageCreate", async (message) => {
       if (parsed.type === "daily") {
         if (parsed.sub === "status") {
           await message.reply({
-            content: dailyWordle.dailyStatus(gid, uid),
+            content: await dailyWordle.dailyStatus(gid, uid),
             ...replyOpts
           });
           return;
         }
         if (parsed.sub === "guess") {
-          const r = dailyWordle.submitDailyGuess(gid, uid, parsed.word);
+          const r = await dailyWordle.submitDailyGuess(gid, uid, parsed.word);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
         if (parsed.sub === "leaderboard") {
-          const r = dailyWordle.getLeaderboard(gid);
+          const r = await dailyWordle.getLeaderboard(gid);
           await message.reply({ content: r.text, ...replyOpts });
           return;
         }
@@ -702,30 +809,30 @@ client.on("messageCreate", async (message) => {
     // 1. Conversation enders
     if (isInConversation(gid, uid) && isConvEnd(content)) {
       exitConversation(gid, uid);
-      const line = persona.chatReply(content, { timeLine, userId: uid, recentChat: db.getRecentChat(uid, 24) });
+      const line = persona.chatReply(content, { timeLine, userId: uid, recentChat: await db.getRecentChat(uid, 24) });
       await message.reply({ content: line, ...replyOpts });
       const sent = sentiment.analyze(content);
       const intent = persona.detectIntent(content);
-      db.logChat(uid, gid, content, line, sent.score, intent.type);
+      await db.logChat(uid, gid, content, line, sent.score, intent.type);
       return;
     }
 
     // 2. Wordle shorthand (exactly 5 letters + valid word + active game)
-    const wordleGame = db.getWordleGame(uid);
+    const wordleGame = await db.getWordleGame(uid);
     if (wordleGame && !wordleGame.solved && !wordleGame.lost) {
       const w = content.toLowerCase().replace(/[^a-z]/g, "");
       if (w.length === 5 && wordle.isValidWord(w)) {
-        const r = wordle.submitGuess(uid, w);
+        const r = await wordle.submitGuess(uid, w);
         await message.reply({ content: r.text, ...replyOpts });
         return;
       }
     }
 
     // 3. Daily shorthand
-    if (dailyWordle.hasActiveDaily && dailyWordle.hasActiveDaily(gid, uid)) {
+    if (dailyWordle.hasActiveDaily && (await dailyWordle.hasActiveDaily(gid, uid))) {
       const w = content.toLowerCase().replace(/[^a-z]/g, "");
       if (w.length === 5 && wordle.isValidWord(w)) {
-        const r = dailyWordle.submitDailyGuess(gid, uid, w);
+        const r = await dailyWordle.submitDailyGuess(gid, uid, w);
         await message.reply({ content: r.text, ...replyOpts });
         return;
       }
@@ -765,43 +872,43 @@ client.on("interactionCreate", async (interaction) => {
       const uid = interaction.user.id;
       const sub = interaction.options.getSubcommand();
       if (sub === "new") {
-        const r = wordle.startNewGame(uid);
+        const r = await wordle.startNewGame(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "status") {
-        const r = wordle.getStatus(uid);
+        const r = await wordle.getStatus(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "guess") {
         const w = interaction.options.getString("word", true);
-        const r = wordle.submitGuess(uid, w);
+        const r = await wordle.submitGuess(uid, w);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "stats") {
-        const r = wordle.getStats(uid);
+        const r = await wordle.getStats(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "share") {
-        const r = wordle.getShare(uid);
+        const r = await wordle.getShare(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "hardmode") {
-        const r = wordle.toggleHardMode(uid);
+        const r = await wordle.toggleHardMode(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "colorblind") {
-        const r = wordle.toggleColorblind(uid);
+        const r = await wordle.toggleColorblind(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
       if (sub === "giveup") {
-        const r = wordle.giveUp(uid);
+        const r = await wordle.giveUp(uid);
         await interaction.reply({ content: r.text, ephemeral: r.ephemeral !== false });
         return;
       }
@@ -827,7 +934,7 @@ client.on("interactionCreate", async (interaction) => {
         const ch = interaction.options.getChannel("channel", true);
         const tzRaw = interaction.options.getString("timezone");
         try {
-          dailyWordle.setSchedule(gid, ch.id, tzRaw || undefined);
+          await dailyWordle.setSchedule(gid, ch.id, tzRaw || undefined);
         } catch (e) {
           await interaction.reply({
             content: String(e.message || e),
@@ -850,27 +957,27 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        dailyWordle.clearSchedule(gid);
+        await dailyWordle.clearSchedule(gid);
         await interaction.reply({ content: "Daily Wordle scheduling cleared for this server.", ephemeral: true });
         return;
       }
 
       if (sub === "guess") {
         const w = interaction.options.getString("word", true);
-        const r = dailyWordle.submitDailyGuess(gid, uid, w);
+        const r = await dailyWordle.submitDailyGuess(gid, uid, w);
         await interaction.reply({ content: r.text, ephemeral: true });
         return;
       }
 
       if (sub === "status") {
         await interaction.reply({
-          content: dailyWordle.dailyStatus(gid, uid),
+          content: await dailyWordle.dailyStatus(gid, uid),
           ephemeral: true
         });
         return;
       }
       if (sub === "leaderboard") {
-        const r = dailyWordle.getLeaderboard(gid);
+        const r = await dailyWordle.getLeaderboard(gid);
         await interaction.reply({ content: r.text, ephemeral: !r.ok });
         return;
       }
@@ -901,7 +1008,27 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-client.login(token).catch((err) => {
-  console.error("Discord login failed:", err);
-  process.exit(1);
-});
+/* ───────────── Startup: normal login or standby mode ───────────── */
+if (failover.isStandbyEnabled()) {
+  // Render standby mode — do NOT log into Discord yet.
+  console.log("[failover] Render standby mode enabled — waiting for laptop heartbeat to go stale");
+  failover.startWatcher({
+    async onActivate() {
+      console.log("[failover] activating — logging into Discord");
+      try {
+        await client.login(token);
+      } catch (err) {
+        console.error("[failover] Discord login failed:", err);
+      }
+    },
+    async onDeactivate() {
+      // This is handled in the /heartbeat route's scheduleStandDown callback
+    },
+  });
+} else {
+  // Normal mode (laptop or non-standby Render) — log in immediately.
+  client.login(token).catch((err) => {
+    console.error("Discord login failed:", err);
+    process.exit(1);
+  });
+}

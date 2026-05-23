@@ -13,6 +13,11 @@ services:
         value: "20"
       - key: DISCORD_TOKEN
         sync: false
+      # Cloud database (Turso) — set in dashboard
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
       - key: OLLAMA_ENABLED
         value: "1"
       - key: OLLAMA_MODEL
@@ -22,3 +27,6 @@ services:
         sync: false
       - key: OLLAMA_TIMEOUT_MS
         value: "120000"
+      # Failover: Render starts in standby and activates only when laptop goes offline
+      - key: RENDER_STANDBY
+        value: "1"
