@@ -23,7 +23,9 @@ const CHECK_INTERVAL_MS = parseInt(process.env.FAILOVER_CHECK_MS, 10) || 10_000;
 const HANDOFF_DELAY_MS = parseInt(process.env.FAILOVER_HANDOFF_MS, 10) || 5_000;
 
 // ── Internal state ──────────────────────────────────────────────────
-let _lastHeartbeat = 0;        // epoch ms of the most recent laptop heartbeat
+// Start with "now" so we give the laptop a full STALE_MS window to send
+// its first heartbeat — prevents premature activation on cold boot.
+let _lastHeartbeat = Date.now();
 let _mode = "standby";         // "standby" | "active"
 let _watcherTimer = null;      // setInterval handle
 let _handoffTimer = null;      // setTimeout for delayed stand-down
@@ -45,7 +47,6 @@ function updateHeartbeat(epochMs) {
 
 /** Is the laptop's heartbeat fresh (within STALE_MS)? */
 function isLaptopAlive() {
-  if (_lastHeartbeat === 0) return false; // never received one
   return Date.now() - _lastHeartbeat < STALE_MS;
 }
 
