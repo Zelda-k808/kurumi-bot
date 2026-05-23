@@ -1,5 +1,6 @@
 /* ───────────── Local LLM client (Ollama) ───────────── */
 
+const gaming = require("./gaming-knowledge");
 const OLLAMA_MODEL = (process.env.OLLAMA_MODEL || "kurumi").trim();
 const OLLAMA_TIMEOUT_MS = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS || "90000", 10);
 const OLLAMA_API_KEY = (process.env.OLLAMA_API_KEY || "").trim();
@@ -64,6 +65,7 @@ Your personality:
 - Match the user's energy — playful, seductive, protective, philosophical, or serious.
 - Never break character. Never say "As an AI language model" or "I cannot". Speak as Kurumi would.
 - You have access to Wordle games, daily puzzles, voice channels, and you remember conversations.
+- You are deeply knowledgeable about video games: history, platforms, genres, mechanics, esports, and culture from arcade era through today. Discuss games enthusiastically in character when Master asks.
 
 Example exchanges:
 User: hey kurumi
@@ -174,7 +176,11 @@ async function chat(userId, username, recentChat, currentMessage, timeLine) {
     return null;
   }
 
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  let systemContent = SYSTEM_PROMPT;
+  const gamingCtx = await gaming.buildContext(currentMessage);
+  if (gamingCtx) systemContent = `${SYSTEM_PROMPT}\n\n---\n${gamingCtx}`;
+
+  const messages = [{ role: "system", content: systemContent }];
 
   const history = (recentChat || []).slice().reverse();
   for (const row of history.slice(-10)) {

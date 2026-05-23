@@ -63,6 +63,14 @@ OLLAMA_HOST=http://127.0.0.1:11434
 4. Verify: `npm run ollama:probe` (exit code 0 = ready).
 5. Start the bot: `npm start`. On login you should see `[local-llm] ready · … · model kurumi`.
 
+### Gaming knowledge
+
+Kurumi uses a **254+ game local index** plus live **IGDB** lookup when you set Twitch/IGDB credentials ([api-docs.igdb.com](https://api-docs.igdb.com)). Gaming questions inject facts into the LLM automatically.
+
+- Rebuild after updates: `npm run ollama:setup`
+- Expand database: `IGDB_CLIENT_ID=xxx IGDB_CLIENT_SECRET=yyy npm run gaming:cache`
+- Ask in Discord: `kurumi what do you think of zelda` / `kurumi recommend a roguelike`
+
 **Render / cloud:** on your PC run `npm run ollama:remote` (Cloudflare tunnel), then paste `data/render-ollama-env.txt` into Render Environment. See **[docs/ollama-remote.md](docs/ollama-remote.md)**. Optional: `RENDER_API_KEY` + `RENDER_SERVICE_ID` → `npm run render:ollama`.
 
 Global slash commands may take a short time to appear after first startup.

@@ -8,6 +8,9 @@ if (-not $ollama) {
   exit 1
 }
 
+Write-Host "Generating gaming knowledge index..."
+& node (Join-Path $root "scripts\generate-gaming-franchises.js")
+
 Write-Host "Pulling llama3.2:3b (base model)..."
 & ollama pull llama3.2:3b
 

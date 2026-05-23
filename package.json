@@ -11,7 +11,9 @@
     "ollama:bind-lan": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ollama-bind-lan.ps1",
     "ollama:tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ollama-tunnel.ps1",
     "ollama:remote": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-ollama-remote.ps1",
-    "render:ollama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply-render-ollama.ps1"
+    "render:ollama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply-render-ollama.ps1",
+    "gaming:generate": "node scripts/generate-gaming-franchises.js",
+    "gaming:cache": "node scripts/build-gaming-cache.js"
   },
   "engines": {
     "node": "20.x"
