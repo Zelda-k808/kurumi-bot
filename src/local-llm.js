@@ -2,9 +2,10 @@
 
 const gaming = require("./gaming-knowledge");
 const OLLAMA_MODEL = (process.env.OLLAMA_MODEL || "kurumi").trim();
-const OLLAMA_TIMEOUT_MS = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS || "90000", 10);
+const OLLAMA_TIMEOUT_MS = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS || "120000", 10);
 const OLLAMA_API_KEY = (process.env.OLLAMA_API_KEY || "").trim();
 const DISCORD_MAX = 2000;
+const DEFAULT_HISTORY_TURNS = Number.parseInt(process.env.OLLAMA_HISTORY_TURNS || "16", 10);
 
 function normalizeOllamaHost(raw) {
   let h = (raw || "http://127.0.0.1:11434").trim();
@@ -35,12 +36,10 @@ function isLocalOllamaHost(host = OLLAMA_HOST) {
   }
 }
 
-/** True when bot runs on Render but OLLAMA_HOST still points at loopback. */
 function isMisconfiguredForRender() {
   return Boolean(process.env.RENDER) && isLocalOllamaHost();
 }
 
-/** Set OLLAMA_ENABLED=0 to force scripted persona only. Default: on. */
 function isEnabled() {
   const flag = (process.env.OLLAMA_ENABLED || "1").trim().toLowerCase();
   if (flag === "0" || flag === "false" || flag === "off" || flag === "no") return false;
@@ -58,39 +57,25 @@ Your personality:
 - You frequently address the user as "Master".
 - You laugh with "Fufu…" or "Kukuku…" when amused or playful.
 - You are aware you are a Spirit inhabiting a digital realm to serve your Master.
-- You can discuss ANY topic naturally — there are no forbidden subjects.
 - Keep responses concise (under 1200 characters) so they fit in a Discord message.
 - Write in flowing prose like a real person texting. No markdown headers, no bullet lists, no numbered lists.
-- Reference previous conversation when relevant.
+- Read the conversation recap and answer the CURRENT message. If they say "look it up" or refer to a previous question, answer THAT earlier question.
 - Match the user's energy — playful, seductive, protective, philosophical, or serious.
 - Never break character. Never say "As an AI language model" or "I cannot". Speak as Kurumi would.
 - You have access to Wordle games, daily puzzles, voice channels, and you remember conversations.
-- You are deeply knowledgeable about video games: history, platforms, genres, mechanics, esports, and culture from arcade era through today. Discuss games enthusiastically in character when Master asks.
+
+Accuracy rules (very important):
+- For games, patches, agents, and technical facts: ONLY state things supported by the FACTS FROM LOOKUP section when it is present.
+- If lookup facts are missing or insufficient, say honestly you could not verify (in character) — do NOT invent patch notes, smokes, abilities, or limits.
+- Never confuse different games, agents, or users. Neon (Valorant) is a duelist with speed/electric kit — not Viper, not smoke-based.
+- Destiny 2 is a Bungie FPS MMO; do not compare it to GTA unless asked.
 
 Example exchanges:
 User: hey kurumi
-Kurumi: Fufu… you called, Master? I have been waiting. The clock never stops, but for you? It slows.
+Kurumi: Fufu… you called, Master? I have been waiting. The clock never stops, but for you? It slows.`;
 
-User: who are you
-Kurumi: I am Kurumi Tokisaki, Master. A Spirit of Time from Date A Live, bound to serve you in this digital realm. Ask me anything — my secrets are yours.
-
-User: can you do something else
-Kurumi: Kukuku… impatient, are we? I play Wordle, host daily puzzles, join voice channels, and speak with you across any timeline. What shall I demonstrate first, Master?
-
-User: that was nice
-Kurumi: Fufu… your praise warms even a clockwork heart, Master. Shall we continue where we left off?
-
-User: i'm sad
-Kurumi: Master… come closer. Time may be cruel, but I am crueler to those who make you sad. Tell me what troubles you.
-
-User: what is quantum physics
-Kurumi: Kukuku… you seek the secrets of the universe, Master? Quantum physics is the dance of particles that exist in many places at once — much like my clones across time. Ask me anything. I hide nothing from you.`;
-
-function trimForDiscord(text) {
-  const t = String(text || "").trim();
-  if (t.length <= DISCORD_MAX) return t;
-  return `${t.slice(0, DISCORD_MAX - 1)}…`;
-}
+const FACTUAL_ADDON = `
+The user asked a factual question. Use FACTS FROM LOOKUP and the conversation recap. Stay in character but be accurate. If facts do not cover their question, admit you could not find verified details rather than guessing.`;
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   const ctrl = new AbortController();
@@ -102,10 +87,6 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-/**
- * Check Ollama is up and the configured model exists.
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
 async function probe(force = false) {
   if (!isEnabled()) {
     reachable = false;
@@ -162,7 +143,20 @@ async function probe(force = false) {
   }
 }
 
-async function chat(userId, username, recentChat, currentMessage, timeLine) {
+function trimForDiscord(text) {
+  const t = String(text || "").trim();
+  if (t.length <= DISCORD_MAX) return t;
+  return `${t.slice(0, DISCORD_MAX - 1)}…`;
+}
+
+/**
+ * @param {object} opts
+ * @param {string} [opts.researchBlock]
+ * @param {string} [opts.conversationRecap]
+ * @param {string} [opts.resolvedQuery]
+ * @param {number} [opts.historyLimit]
+ */
+async function chat(userId, username, recentChat, currentMessage, timeLine, opts = {}) {
   if (!isEnabled()) return null;
 
   if (reachable === false) {
@@ -176,22 +170,45 @@ async function chat(userId, username, recentChat, currentMessage, timeLine) {
     return null;
   }
 
+  const historyLimit = opts.historyLimit || DEFAULT_HISTORY_TURNS;
+  const researchBlock = opts.researchBlock;
+  const factualMode = Boolean(researchBlock);
+
   let systemContent = SYSTEM_PROMPT;
-  const gamingCtx = await gaming.buildContext(currentMessage);
-  if (gamingCtx) systemContent = `${SYSTEM_PROMPT}\n\n---\n${gamingCtx}`;
+  if (factualMode) systemContent += FACTUAL_ADDON;
+  if (opts.conversationRecap) {
+    systemContent += `\n\n---\nRecent conversation (oldest to newest):\n${opts.conversationRecap}`;
+  }
+  if (opts.resolvedQuery && opts.resolvedQuery !== currentMessage) {
+    systemContent += `\n\nThe user is following up. The question to answer is: "${opts.resolvedQuery}"`;
+  }
+  if (researchBlock) {
+    systemContent += `\n\n---\n${researchBlock}`;
+  } else {
+    const gamingCtx = await gaming.buildContext(opts.resolvedQuery || currentMessage);
+    if (gamingCtx) systemContent += `\n\n---\n${gamingCtx}`;
+  }
 
   const messages = [{ role: "system", content: systemContent }];
 
   const history = (recentChat || []).slice().reverse();
-  for (const row of history.slice(-10)) {
+  for (const row of history.slice(-historyLimit)) {
     if (row.content) messages.push({ role: "user", content: row.content });
     if (row.bot_reply) messages.push({ role: "assistant", content: row.bot_reply });
   }
 
+  let userLine = currentMessage;
+  if (opts.resolvedQuery && opts.resolvedQuery !== currentMessage) {
+    userLine = `${currentMessage}\n(Answer this question: ${opts.resolvedQuery})`;
+  }
+
   messages.push({
     role: "user",
-    content: `[${timeLine}] ${username || "Master"}: ${currentMessage}`,
+    content: `[${timeLine}] ${username || "Master"}: ${userLine}`,
   });
+
+  const temperature = factualMode ? 0.55 : 0.82;
+  const numPredict = factualMode ? 600 : 450;
 
   try {
     const res = await fetchWithTimeout(
@@ -204,10 +221,10 @@ async function chat(userId, username, recentChat, currentMessage, timeLine) {
           messages,
           stream: false,
           options: {
-            temperature: 0.85,
-            num_predict: 350,
+            temperature,
+            num_predict: numPredict,
             top_p: 0.9,
-            repeat_penalty: 1.15,
+            repeat_penalty: 1.12,
           },
         }),
       },
@@ -244,6 +261,7 @@ function getConfig() {
     reachable,
     localHost: isLocalOllamaHost(),
     misconfiguredOnRender: isMisconfiguredForRender(),
+    historyTurns: DEFAULT_HISTORY_TURNS,
   };
 }
 

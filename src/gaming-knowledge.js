@@ -7,7 +7,7 @@ const igdb = require("./igdb-client");
 const MAX_CONTEXT = 2200;
 
 const GAMING_RE =
-  /\b(game|games|gaming|gamer|videogame|video game|playstation|ps[1-5]|xbox|nintendo|switch|wii|pc game|steam|esports|e-sports|mmorpg|rpg|fps|moba|roguelike|soulslike|zelda|mario|pokemon|fortnite|minecraft|elden ring|gta|cod|call of duty|final fantasy|resident evil|halo|overwatch|league of legends|dota|cs2|csgo|bg3|baldur|dark souls|bloodborne|sekiro|metroid|kirby|sonic|persona|monster hunter|diablo|starcraft|warcraft|wow|world of warcraft|elder scrolls|skyrim|fallout|mass effect|dragon age|hollow knight|celeste|hades|undertale|deltarune|stardew|animal crossing|smash bros|tekken|street fighter|mortal kombat|assassin'?s creed|far cry|watch dogs|cyberpunk|witcher|borderlands|destiny|apex|valorant|pubg|rocket league|among us|roblox|genshin|honkai|ffxiv|ff14|jrpg|crpg|indie game|retro game|arcade|atari|nes|snes|n64|gamecube|gba|ds|3ds|psp|vita|dreamcast|saturn|genesis|megadrive|tetris|pac-man|donkey kong|legend of zelda|breath of the wild|tears of the kingdom|botw|totk)\b/i;
+  /\b(game|games|gaming|gamer|videogame|video game|playstation|ps[1-5]|xbox|nintendo|switch|wii|pc game|steam|esports|e-sports|mmorpg|rpg|fps|moba|roguelike|soulslike|zelda|mario|pokemon|fortnite|minecraft|elden ring|gta|cod|call of duty|final fantasy|resident evil|halo|overwatch|league of legends|dota|cs2|csgo|bg3|baldur|balatro|dark souls|bloodborne|sekiro|metroid|kirby|sonic|persona|monster hunter|diablo|starcraft|warcraft|wow|world of warcraft|elder scrolls|skyrim|fallout|mass effect|dragon age|hollow knight|celeste|hades|undertale|deltarune|stardew|animal crossing|smash bros|tekken|street fighter|mortal kombat|assassin'?s creed|far cry|watch dogs|cyberpunk|witcher|borderlands|destiny|apex|valorant|neon|viper|agent|patch notes|operator|ops|server|pubg|rocket league|among us|roblox|genshin|honkai|ffxiv|ff14|jrpg|crpg|indie game|retro game|arcade|atari|nes|snes|n64|gamecube|gba|ds|3ds|psp|vita|dreamcast|saturn|genesis|megadrive|tetris|pac-man|donkey kong|legend of zelda|breath of the wild|tears of the kingdom|botw|totk|reference|refrence|san andreas|free to play|f2p)\b/i;
 
 let franchiseIndex = null;
 let cacheIndex = null;
@@ -99,14 +99,16 @@ async function fetchOnline(query) {
 /**
  * Build factual gaming context to inject before the user message.
  * @param {string} userMessage
+ * @param {{ forceLookup?: boolean }} opts
  * @returns {Promise<string|null>}
  */
-async function buildContext(userMessage) {
-  if (!isGamingQuery(userMessage)) return null;
+async function buildContext(userMessage, opts = {}) {
+  const force = opts.forceLookup || false;
+  if (!force && !isGamingQuery(userMessage)) return null;
 
   const local = searchLocal(userMessage, 4);
   let remote = [];
-  if (igdb.isConfigured() && (local.length === 0 || local.length < 3)) {
+  if (igdb.isConfigured() && (force || local.length === 0 || local.length < 3)) {
     remote = await fetchOnline(userMessage);
   }
 
@@ -132,6 +134,9 @@ async function buildContext(userMessage) {
     for (const e of entries) {
       block += `- ${formatEntry(e)}\n`;
     }
+  } else if (force) {
+    block +=
+      "\n\nNo game match in database for this query. Say you could not verify specifics and suggest the user check official patch notes or wiki — do NOT invent abilities.";
   } else {
     block +=
       "\n\nNo exact match in the local index — answer from general gaming knowledge. If unsure on obscure titles, say what you know and offer to discuss something similar.";

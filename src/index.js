@@ -32,6 +32,8 @@ const db = require("./database");
 const llmChat = require("./local-llm");
 const voiceXpTracker = require("./voice-xp-tracker");
 const kurumiLeaderboard = require("./kurumi-leaderboard");
+const chatContext = require("./chat-context");
+const chatResearch = require("./chat-research");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -439,8 +441,8 @@ client.once("ready", async () => {
 
 /* ───────────── Sticky conversation + Wordle shorthand ───────────── */
 const activeConversations = new Map();
-const CONV_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
-const CONV_MAX_TURNS = 20;
+const CONV_TIMEOUT_MS = 12 * 60 * 1000; // 12 minutes
+const CONV_MAX_TURNS = 40;
 
 function getConvKey(gid, uid) { return `${gid}:${uid}`; }
 
@@ -489,16 +491,35 @@ async function handleChatReply(message, text, replyOpts, timeLine) {
   const userId = message.author.id;
   const guildId = message.guild?.id || null;
   db.ensureUser(userId, message.author.username);
-  const recentChat = db.getRecentChat(userId, 10);
+  const recentChat = db.getRecentChat(userId, 24);
 
+  const { query: resolvedQuery } = chatContext.resolveQuery(text, recentChat);
+  const recap = chatContext.buildConversationRecap(recentChat, 14);
+  const wantsLookup =
+    /\b(look\s*it\s*up|look\s*up|search|google)\b/i.test(text) ||
+    chatContext.needsPriorQuestion(text);
+  const shouldResearch =
+    wantsLookup || chatContext.isLikelyFactual(resolvedQuery);
+
+  let researchBlock = null;
   if (llmChat.isEnabled()) {
     try {
       await message.channel.sendTyping();
     } catch (_) {}
+    if (shouldResearch) {
+      researchBlock = await chatResearch.gatherFacts(resolvedQuery, { force: wantsLookup });
+      try {
+        await message.channel.sendTyping();
+      } catch (_) {}
+    }
   }
 
-  // Try LLM first for human-like conversation; fall back to hardcoded persona
-  let line = await llmChat.chat(userId, message.author.username, recentChat, text, timeLine);
+  let line = await llmChat.chat(userId, message.author.username, recentChat, text, timeLine, {
+    researchBlock,
+    conversationRecap: recap,
+    resolvedQuery,
+    historyLimit: 18,
+  });
   if (!line) {
     line = persona.chatReply(text, { timeLine, userId, recentChat });
   }
@@ -681,7 +702,7 @@ client.on("messageCreate", async (message) => {
     // 1. Conversation enders
     if (isInConversation(gid, uid) && isConvEnd(content)) {
       exitConversation(gid, uid);
-      const line = persona.chatReply(content, { timeLine, userId: uid, recentChat: db.getRecentChat(uid, 10) });
+      const line = persona.chatReply(content, { timeLine, userId: uid, recentChat: db.getRecentChat(uid, 24) });
       await message.reply({ content: line, ...replyOpts });
       const sent = sentiment.analyze(content);
       const intent = persona.detectIntent(content);
