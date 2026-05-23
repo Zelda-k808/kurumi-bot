@@ -30,6 +30,8 @@ const { formatTimeAmPmVerbose, DEFAULT_DISPLAY_TIMEZONE } = require("./time-util
 const dailyWordle = require("./daily-wordle");
 const db = require("./database");
 const llmChat = require("./local-llm");
+const voiceXpTracker = require("./voice-xp-tracker");
+const kurumiLeaderboard = require("./kurumi-leaderboard");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -184,6 +186,22 @@ const commandData = [
       s
         .setName("stop")
         .setDescription("Stop daily posts for this server (Manage Server).")
+    ),
+  new SlashCommandBuilder()
+    .setName("leaderboard")
+    .setDescription("Voice XP leaderboard — 100 XP per minute in voice channels.")
+    .addIntegerOption((o) =>
+      o
+        .setName("page")
+        .setDescription("Page number (10 per page)")
+        .setMinValue(1)
+        .setRequired(false)
+    )
+    .addUserOption((o) =>
+      o
+        .setName("user")
+        .setDescription("Show one member's rank card instead of the top list")
+        .setRequired(false)
     )
 ].map((c) => c.toJSON());
 
@@ -388,6 +406,8 @@ client.once("ready", async () => {
     dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] tick", e));
   }, 60_000);
   dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] initial tick", e));
+
+  voiceXpTracker.attach(client);
 
   if (llmChat.isEnabled()) {
     const cfg = llmChat.getConfig();
@@ -610,6 +630,19 @@ client.on("messageCreate", async (message) => {
         }
       }
 
+      if (parsed.type === "leaderboard") {
+        const payload = await kurumiLeaderboard.buildLeaderboardPayload(
+          client,
+          message.guild.id,
+          {
+            page: parsed.page,
+            userId: parsed.self ? message.author.id : undefined,
+          }
+        );
+        await message.reply({ ...payload, ...replyOpts });
+        return;
+      }
+
       if (parsed.type === "daily") {
         if (parsed.sub === "status") {
           await message.reply({
@@ -820,6 +853,27 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.reply({ content: r.text, ephemeral: !r.ok });
         return;
       }
+      return;
+    }
+    case "leaderboard": {
+      if (!interaction.guild) {
+        await interaction.reply({
+          content: "Voice leaderboard works in servers only, Master.",
+          ephemeral: true,
+        });
+        return;
+      }
+      const page = interaction.options.getInteger("page") || 1;
+      const target = interaction.options.getUser("user");
+      const payload = await kurumiLeaderboard.buildLeaderboardPayload(
+        client,
+        interaction.guild.id,
+        {
+          page,
+          userId: target?.id,
+        }
+      );
+      await interaction.reply(payload);
       return;
     }
     default:

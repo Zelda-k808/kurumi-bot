@@ -114,6 +114,19 @@ function init() {
       value         TEXT,
       updated_at    INTEGER DEFAULT (unixepoch())
     );
+
+    CREATE TABLE IF NOT EXISTS user_voice_xp (
+      guild_id      TEXT NOT NULL,
+      user_id       TEXT NOT NULL,
+      username      TEXT,
+      total_xp      INTEGER DEFAULT 0,
+      voice_seconds INTEGER DEFAULT 0,
+      updated_at    INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (guild_id, user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_voice_xp_guild_xp
+      ON user_voice_xp (guild_id, total_xp DESC);
   `);
 }
 
@@ -399,6 +412,63 @@ function getDailyLeaderboard(guildId, ymd) {
   `).all(guildId, ymd);
 }
 
+/* ───────────── Voice XP / levels ───────────── */
+
+function ensureUserVoiceXp(guildId, userId, username) {
+  db.prepare(`
+    INSERT INTO user_voice_xp (guild_id, user_id, username, total_xp, voice_seconds)
+    VALUES (?, ?, ?, 0, 0)
+    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+      username = COALESCE(excluded.username, user_voice_xp.username),
+      updated_at = unixepoch()
+  `).run(guildId, userId, username || null);
+}
+
+function addVoiceXp(guildId, userId, username, xp, voiceSeconds) {
+  ensureUserVoiceXp(guildId, userId, username);
+  db.prepare(`
+    UPDATE user_voice_xp
+    SET total_xp = total_xp + ?,
+        voice_seconds = voice_seconds + ?,
+        username = COALESCE(?, username),
+        updated_at = unixepoch()
+    WHERE guild_id = ? AND user_id = ?
+  `).run(xp, voiceSeconds, username || null, guildId, userId);
+}
+
+function getUserVoiceXp(guildId, userId) {
+  return db.prepare(
+    "SELECT * FROM user_voice_xp WHERE guild_id = ? AND user_id = ?"
+  ).get(guildId, userId);
+}
+
+function getVoiceLeaderboard(guildId, limit, offset) {
+  return db.prepare(`
+    SELECT user_id, username, total_xp, voice_seconds
+    FROM user_voice_xp
+    WHERE guild_id = ? AND total_xp > 0
+    ORDER BY total_xp DESC, voice_seconds DESC
+    LIMIT ? OFFSET ?
+  `).all(guildId, limit, offset);
+}
+
+function getVoiceLeaderboardCount(guildId) {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS c FROM user_voice_xp WHERE guild_id = ? AND total_xp > 0"
+  ).get(guildId);
+  return row?.c || 0;
+}
+
+function getUserVoiceRank(guildId, userId) {
+  const u = getUserVoiceXp(guildId, userId);
+  if (!u || u.total_xp <= 0) return 0;
+  const row = db.prepare(`
+    SELECT COUNT(*) + 1 AS rank FROM user_voice_xp
+    WHERE guild_id = ? AND total_xp > ?
+  `).get(guildId, u.total_xp);
+  return row?.rank || 1;
+}
+
 module.exports = {
   db,
   init,
@@ -429,4 +499,10 @@ module.exports = {
   getTopIntents,
   getState,
   setState,
+  ensureUserVoiceXp,
+  addVoiceXp,
+  getUserVoiceXp,
+  getVoiceLeaderboard,
+  getVoiceLeaderboardCount,
+  getUserVoiceRank,
 };

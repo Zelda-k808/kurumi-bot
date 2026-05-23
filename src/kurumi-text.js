@@ -8,8 +8,9 @@ const KURUMI_HELP =
   "`kurumi` alone · `kurumi join` · `kurumi leave` · `kurumi status` · `kurumi ping`\n" +
   "`kurumi wordle new` · `kurumi wordle guess <word>` · `kurumi wordle status`\n" +
   "`kurumi wordle stats` · `kurumi wordle share` · `kurumi wordle hardmode` · `kurumi wordle colorblind` · `kurumi wordle giveup`\n" +
-  "`kurumi daily guess <word>` · `kurumi daily status` · `kurumi daily leaderboard` · chat: **`kurumi hi`** etc.\n" +
-  "`kurumi help` — this list";
+  "`kurumi daily guess <word>` · `kurumi daily status` · `kurumi daily leaderboard`\n" +
+  "`kurumi leaderboard` · `kurumi rank` — voice XP leaderboard (100 XP/min in VC)\n" +
+  "chat: **`kurumi hi`** etc. · `kurumi help` — this list";
 
 /**
  * @param {string} content
@@ -44,6 +45,15 @@ function parseKurumiLine(content) {
     return { type: "unknown_command" };
   }
 
+  if (head === "leaderboard" || head === "lb" || head === "rank" || head === "levels") {
+    const page = Math.max(1, parseInt(tokens[1], 10) || 1);
+    return {
+      type: "leaderboard",
+      page: Number.isFinite(page) ? page : 1,
+      self: head === "rank" || head === "levels",
+    };
+  }
+
   if (head === "daily") {
     const sub = (tokens[1] || "").toLowerCase();
     if (sub === "status" && tokens.length === 2) return { type: "daily", sub: "status" };
@@ -66,6 +76,10 @@ function parseKurumiLine(content) {
     !VOICE.has(head) &&
     head !== "wordle" &&
     head !== "daily" &&
+    head !== "leaderboard" &&
+    head !== "lb" &&
+    head !== "rank" &&
+    head !== "levels" &&
     head !== "help" &&
     !/^(hi|hey|hello|yo|sup|gm|gn|morning|bye|goodbye|cya|thanks|thank|thx)$/i.test(head)
   ) {
