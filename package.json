@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
+    "prestart": "node scripts/kill-old-bot.js",
     "start": "node src/index.js",
     "ollama:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ollama.ps1",
     "ollama:probe": "node -e \"require('./src/local-llm').probe(true).then(r=>{console.log(r);process.exit(r.ok?0:1)})\"",
@@ -14,7 +15,10 @@
     "render:ollama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply-render-ollama.ps1",
     "gaming:generate": "node scripts/generate-gaming-franchises.js",
     "gaming:cache": "node scripts/build-gaming-cache.js",
-    "migrate:turso": "node scripts/migrate-to-turso.js"
+    "migrate:turso": "node scripts/migrate-to-turso.js",
+    "lavalink:setup": "node scripts/setup-lavalink.js",
+    "lavalink": "node scripts/start-lavalink.js",
+    "dev": "node scripts/start-lavalink.js --bot"
   },
   "engines": {
     "node": "20.x"
@@ -24,7 +28,8 @@
     "@libsql/client": "^0.15.0",
     "discord.js": "^14.26.2",
     "dotenv": "^17.4.1",
-    "sentiment": "^5.0.2"
+    "sentiment": "^5.0.2",
+    "shoukaku": "^4.3.0"
   },
   "devDependencies": {
     "better-sqlite3": "^11.9.1"

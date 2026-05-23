@@ -3,6 +3,19 @@ if (!process.env.RENDER) {
   require("dotenv").config({ override: false });
 }
 
+/* ── Write PID file so `prestart` can kill old instances on restart ── */
+const fs = require("fs");
+const path = require("path");
+const BOT_PID_FILE = path.join(__dirname, "..", ".bot.pid");
+try {
+  fs.writeFileSync(BOT_PID_FILE, String(process.pid), "utf-8");
+} catch (_) {}
+// Clean up PID file on exit
+function removePidFile() {
+  try { fs.unlinkSync(BOT_PID_FILE); } catch (_) {}
+}
+process.on("exit", removePidFile);
+
 process.on("uncaughtException", (err) => console.error("uncaughtException:", err));
 process.on("unhandledRejection", (reason) => console.error("unhandledRejection:", reason));
 
@@ -35,6 +48,16 @@ const kurumiLeaderboard = require("./kurumi-leaderboard");
 const chatContext = require("./chat-context");
 const chatResearch = require("./chat-research");
 const failover = require("./failover");
+
+/* ───────────── Music system ───────────── */
+const shoukakuClient = require("./music/shoukaku-client");
+const { musicCommandData } = require("./music/commands");
+const { handleMusicInteraction, handleMusicButton, setDb: setMusicDb } = require("./music/interaction-handler");
+const musicQueue = require("./music/queue-manager");
+const { buildNowPlaying } = require("./music/now-playing");
+const musicTrackResolver = require("./music/track-resolver");
+const { getPreset: getMusicFilter } = require("./music/filters");
+const musicLyrics = require("./music/lyrics-client");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -312,7 +335,7 @@ const commandData = [
         .setDescription("Show one member's rank card instead of the top list")
         .setRequired(false)
     )
-].map((c) => c.toJSON());
+].map((c) => c.toJSON()).concat(musicCommandData);
 
 function parseGuildIds(raw) {
   if (!raw || typeof raw !== "string") return [];
@@ -518,6 +541,15 @@ client.once("ready", async () => {
 
   voiceXpTracker.attach(client);
 
+  /* ── Initialize music system (Shoukaku → Lavalink) ── */
+  try {
+    shoukakuClient.init(client);
+    setMusicDb(db);
+    console.log("[music] Shoukaku initialized — connecting to Lavalink…");
+  } catch (err) {
+    console.warn("[music] Shoukaku init failed (music features disabled):", err.message);
+  }
+
   if (llmChat.isEnabled()) {
     const cfg = llmChat.getConfig();
     if (cfg.misconfiguredOnRender) {
@@ -641,6 +673,219 @@ async function handleChatReply(message, text, replyOpts, timeLine) {
                       : (genericSocial && conv && conv.lastIntent) ? conv.lastIntent
                       : intent.type;
   persona.setConv(userId, { lastIntent: topicIntent, lastBotReply: line, lastUserMsg: text });
+}
+
+/* ───────────── Music text command handler ───────────── */
+async function handleMusicTextCommand(message, parsed, replyOpts) {
+  const { cmd } = parsed;
+  const gid = message.guild.id;
+  const uid = message.author.id;
+
+  if (!shoukakuClient.isReady()) {
+    await message.reply({ content: "Fufu… my music system isn't connected right now, Master~", ...replyOpts });
+    return;
+  }
+
+  // Commands that need voice channel
+  if (cmd === "play" || cmd === "247") {
+    const vc = message.member?.voice?.channel;
+    if (!vc) {
+      await message.reply({ content: "You need to be in a voice channel, Master~", ...replyOpts });
+      return;
+    }
+
+    if (cmd === "play") {
+      const { tracks, playlistName } = await musicTrackResolver.resolve(parsed.query, uid);
+      if (!tracks.length) {
+        await message.reply({ content: "Couldn't find anything for that, Master~", ...replyOpts });
+        return;
+      }
+      let q = musicQueue.get(gid);
+      if (!q) {
+        q = musicQueue.getOrCreate(gid, message.channelId, vc.id);
+        await q.connect();
+      }
+      const count = await q.enqueue(tracks);
+      if (playlistName) {
+        await message.reply({ content: `📋 Queued **${count}** tracks from **${playlistName}**`, ...replyOpts });
+      } else if (count === 1 && q.tracks.length === 0) {
+        const np = buildNowPlaying(q);
+        q.nowPlayingMessage = await message.reply(np);
+      } else {
+        await message.reply({ content: `🎵 Queued **${tracks[0].title}** — position #${q.tracks.length}`, ...replyOpts });
+      }
+      return;
+    }
+
+    if (cmd === "247") {
+      let q = musicQueue.get(gid);
+      if (!q) {
+        q = musicQueue.getOrCreate(gid, message.channelId, vc.id);
+        await q.connect();
+      }
+      q.stay247 = !q.stay247;
+      if (q.stay247) q._clearIdleTimer();
+      await message.reply({ content: `🕐 24/7 mode: **${q.stay247 ? "ON" : "OFF"}**`, ...replyOpts });
+      return;
+    }
+  }
+
+  // Commands that need an active queue
+  const q = musicQueue.get(gid);
+  if (!q || !q.current) {
+    if (cmd === "queue" || cmd === "nowplaying") {
+      await message.reply({ content: "Nothing is playing, Master.", ...replyOpts });
+    } else {
+      await message.reply({ content: "Nothing is playing right now, Master.", ...replyOpts });
+    }
+    return;
+  }
+
+  switch (cmd) {
+    case "skip": {
+      const t = q.current;
+      await q.skip();
+      await message.reply({ content: `⏭️ Skipped **${t?.title || "track"}**.`, ...replyOpts });
+      break;
+    }
+    case "stop":
+      await q.stop();
+      await message.reply({ content: "⏹️ Stopped and cleared the queue.", ...replyOpts });
+      break;
+    case "pause":
+      await q.pause();
+      await message.reply({ content: "⏸️ Paused.", ...replyOpts });
+      break;
+    case "resume":
+      await q.resume();
+      await message.reply({ content: "▶️ Resumed.", ...replyOpts });
+      break;
+    case "nowplaying": {
+      const np = buildNowPlaying(q);
+      await message.reply(np);
+      break;
+    }
+    case "queue": {
+      const page = parsed.page || 1;
+      const perPage = 10;
+      const totalPages = Math.max(1, Math.ceil(q.tracks.length / perPage));
+      const p = Math.min(page, totalPages);
+      const start = (p - 1) * perPage;
+      const slice = q.tracks.slice(start, start + perPage);
+      let desc = `**Now:** ${q.current.title}\n`;
+      desc += slice.map((t, i) => `\`${start + i + 1}.\` ${t.title} — ${musicTrackResolver.formatDuration(t.duration)}`).join("\n");
+      if (!slice.length) desc += "*Queue is empty.*";
+      await message.reply({ content: desc + `\n*Page ${p}/${totalPages} • ${q.tracks.length} tracks*`, ...replyOpts });
+      break;
+    }
+    case "volume":
+      if (parsed.level === null || parsed.level === undefined) {
+        await message.reply({ content: `🔊 Volume: **${q.volume}%**`, ...replyOpts });
+      } else {
+        const v = await q.setVolume(parsed.level);
+        await message.reply({ content: `🔊 Volume: **${v}%**`, ...replyOpts });
+      }
+      break;
+    case "shuffle":
+      q.shuffle();
+      await message.reply({ content: "🔀 Queue shuffled!", ...replyOpts });
+      break;
+    case "loop": {
+      const mode = q.cycleLoop();
+      const labels = { 0: "Off", 1: "Track", 2: "Queue" };
+      await message.reply({ content: `🔁 Loop: **${labels[mode]}**`, ...replyOpts });
+      break;
+    }
+    case "clear":
+      q.clear();
+      await message.reply({ content: "🧹 Queue cleared!", ...replyOpts });
+      break;
+    case "autoplay":
+      q.autoplay = !q.autoplay;
+      await message.reply({ content: `✨ Autoplay: **${q.autoplay ? "ON" : "OFF"}**`, ...replyOpts });
+      break;
+    case "seek": {
+      const t = parsed.time;
+      const colons = t.match(/^(\d+):(\d{1,2})$/);
+      let ms;
+      if (colons) ms = (parseInt(colons[1]) * 60 + parseInt(colons[2])) * 1000;
+      else ms = parseInt(t) * 1000;
+      if (isNaN(ms)) { await message.reply({ content: "Invalid time format.", ...replyOpts }); break; }
+      await q.seek(ms);
+      await message.reply({ content: `⏩ Seeked to **${musicTrackResolver.formatDuration(ms)}**.`, ...replyOpts });
+      break;
+    }
+    case "filter": {
+      const preset = await q.setFilter(parsed.preset);
+      if (!preset) { await message.reply({ content: "Unknown filter.", ...replyOpts }); break; }
+      await message.reply({ content: `${preset.label} — ${preset.description}`, ...replyOpts });
+      break;
+    }
+    case "lyrics": {
+      const title = parsed.query || q.current.title;
+      const artist = parsed.query ? null : q.current.author;
+      const result = await musicLyrics.searchLyrics(title, artist);
+      if (!result) { await message.reply({ content: `No lyrics found for **${title}**.`, ...replyOpts }); break; }
+      const pages = musicLyrics.paginateLyrics(result.lyrics, 1900);
+      await message.reply({ content: `🎤 **${result.title}** — ${result.artist}\n\n${pages[0]}`, ...replyOpts });
+      break;
+    }
+    case "remove": {
+      const removed = q.remove(parsed.position);
+      if (!removed) { await message.reply({ content: "Invalid position.", ...replyOpts }); break; }
+      await message.reply({ content: `🗑️ Removed **${removed.title}**.`, ...replyOpts });
+      break;
+    }
+    case "move": {
+      if (!q.move(parsed.from, parsed.to)) { await message.reply({ content: "Invalid positions.", ...replyOpts }); break; }
+      await message.reply({ content: `↕️ Moved track ${parsed.from} → ${parsed.to}.`, ...replyOpts });
+      break;
+    }
+    case "playlist": {
+      const { sub, name } = parsed;
+      if (sub === "save") {
+        const tracks = [];
+        if (q.current) tracks.push({ title: q.current.title, author: q.current.author, uri: q.current.uri, duration: q.current.duration });
+        for (const t of q.tracks) tracks.push({ title: t.title, author: t.author, uri: t.uri, duration: t.duration });
+        await db.savePlaylist(uid, name, tracks);
+        await message.reply({ content: `💾 Saved **${tracks.length}** tracks as **${name}**.`, ...replyOpts });
+      } else if (sub === "load") {
+        const playlist = await db.getPlaylist(uid, name);
+        if (!playlist) { await message.reply({ content: `Playlist **${name}** not found.`, ...replyOpts }); break; }
+        const vc = message.member?.voice?.channel;
+        if (!vc) { await message.reply({ content: "Join a voice channel first.", ...replyOpts }); break; }
+        const plTracks = JSON.parse(playlist.tracks);
+        let lq = musicQueue.get(gid);
+        if (!lq) { lq = musicQueue.getOrCreate(gid, message.channelId, vc.id); await lq.connect(); }
+        let loaded = 0;
+        for (const t of plTracks) {
+          try {
+            const { tracks: r } = await musicTrackResolver.resolve(t.uri || t.title, uid);
+            if (r.length) { await lq.enqueue([r[0]]); loaded++; }
+          } catch (_) {}
+        }
+        await message.reply({ content: `📋 Loaded **${loaded}/${plTracks.length}** from **${name}**.`, ...replyOpts });
+      } else if (sub === "list") {
+        const pls = await db.getUserPlaylists(uid);
+        if (!pls.length) { await message.reply({ content: "No saved playlists.", ...replyOpts }); break; }
+        const lines = pls.map((p) => `**${p.name}** — ${JSON.parse(p.tracks).length} tracks`);
+        await message.reply({ content: `💾 **Your Playlists:**\n${lines.join("\n")}`, ...replyOpts });
+      } else if (sub === "delete") {
+        await db.deletePlaylist(uid, name);
+        await message.reply({ content: `🗑️ Deleted **${name}**.`, ...replyOpts });
+      } else if (sub === "info") {
+        const playlist = await db.getPlaylist(uid, name);
+        if (!playlist) { await message.reply({ content: `Playlist **${name}** not found.`, ...replyOpts }); break; }
+        const plTracks = JSON.parse(playlist.tracks);
+        const lines = plTracks.slice(0, 15).map((t, i) => `\`${i + 1}.\` ${t.title}`);
+        if (plTracks.length > 15) lines.push(`… and ${plTracks.length - 15} more`);
+        await message.reply({ content: `📋 **${name}:**\n${lines.join("\n")}`, ...replyOpts });
+      }
+      break;
+    }
+    default:
+      await message.reply({ content: "Unknown music command, Master.", ...replyOpts });
+  }
 }
 
 client.on("messageCreate", async (message) => {
@@ -791,6 +1036,17 @@ client.on("messageCreate", async (message) => {
         }
       }
 
+      /* ── Music text commands (kurumi play/skip/etc.) ── */
+      if (parsed.type === "music") {
+        try {
+          await handleMusicTextCommand(message, parsed, replyOpts);
+        } catch (err) {
+          console.error("[music text]", err);
+          await message.reply({ content: "Something went wrong with the music command, Master…", ...replyOpts });
+        }
+        return;
+      }
+
       if (parsed.type === "chat") {
         await handleChatReply(message, parsed.text, replyOpts, timeLine);
         if (!isConvEnd(parsed.text)) {
@@ -850,7 +1106,19 @@ client.on("messageCreate", async (message) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  // Handle music button clicks
+  if (interaction.isButton()) {
+    try { await handleMusicButton(interaction); } catch (e) { console.error("[music] button error:", e); }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
+
+  // Try music commands first
+  try {
+    const handled = await handleMusicInteraction(interaction);
+    if (handled) return;
+  } catch (e) { console.error("[music] interaction error:", e); }
 
   switch (interaction.commandName) {
     case "join":

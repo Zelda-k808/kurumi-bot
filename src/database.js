@@ -140,6 +140,24 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_voice_xp_guild_xp
       ON user_voice_xp (guild_id, total_xp DESC)`,
+    `CREATE TABLE IF NOT EXISTS music_playlists (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id       TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      tracks        TEXT DEFAULT '[]',
+      created_at    INTEGER DEFAULT (unixepoch()),
+      updated_at    INTEGER DEFAULT (unixepoch()),
+      UNIQUE(user_id, name)
+    )`,
+    `CREATE TABLE IF NOT EXISTS music_settings (
+      guild_id          TEXT PRIMARY KEY,
+      dj_role_id        TEXT,
+      music_channel_id  TEXT,
+      default_volume    INTEGER DEFAULT 80,
+      stay_24_7         INTEGER DEFAULT 0,
+      autoplay          INTEGER DEFAULT 0,
+      idle_timeout_ms   INTEGER DEFAULT 300000
+    )`,
   ], "write");
 }
 
@@ -481,6 +499,63 @@ async function getUserVoiceRank(guildId, userId) {
   return row?.rank || 1;
 }
 
+/* ───────────── Music Playlists ───────────── */
+
+async function getPlaylist(userId, name) {
+  return get("SELECT * FROM music_playlists WHERE user_id = ? AND name = ?", [userId, name]);
+}
+
+async function savePlaylist(userId, name, tracks) {
+  await run(`
+    INSERT INTO music_playlists (user_id, name, tracks, updated_at)
+    VALUES (?, ?, ?, unixepoch())
+    ON CONFLICT(user_id, name) DO UPDATE SET
+      tracks = excluded.tracks,
+      updated_at = excluded.updated_at
+  `, [userId, name, JSON.stringify(tracks)]);
+}
+
+async function deletePlaylist(userId, name) {
+  await run("DELETE FROM music_playlists WHERE user_id = ? AND name = ?", [userId, name]);
+}
+
+async function getUserPlaylists(userId) {
+  return all("SELECT * FROM music_playlists WHERE user_id = ? ORDER BY updated_at DESC", [userId]);
+}
+
+async function getPlaylistCount(userId) {
+  const row = await get("SELECT COUNT(*) AS c FROM music_playlists WHERE user_id = ?", [userId]);
+  return row?.c || 0;
+}
+
+/* ───────────── Music Settings (per guild) ───────────── */
+
+async function getMusicSettings(guildId) {
+  return get("SELECT * FROM music_settings WHERE guild_id = ?", [guildId]);
+}
+
+async function setMusicSettings(guildId, settings) {
+  await run(`
+    INSERT INTO music_settings (guild_id, dj_role_id, music_channel_id, default_volume, stay_24_7, autoplay, idle_timeout_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET
+      dj_role_id = excluded.dj_role_id,
+      music_channel_id = excluded.music_channel_id,
+      default_volume = excluded.default_volume,
+      stay_24_7 = excluded.stay_24_7,
+      autoplay = excluded.autoplay,
+      idle_timeout_ms = excluded.idle_timeout_ms
+  `, [
+    guildId,
+    settings.dj_role_id || null,
+    settings.music_channel_id || null,
+    settings.default_volume ?? 80,
+    settings.stay_24_7 ? 1 : 0,
+    settings.autoplay ? 1 : 0,
+    settings.idle_timeout_ms ?? 300000,
+  ]);
+}
+
 module.exports = {
   client,
   init,
@@ -517,4 +592,12 @@ module.exports = {
   getVoiceLeaderboard,
   getVoiceLeaderboardCount,
   getUserVoiceRank,
+  // Music
+  getPlaylist,
+  savePlaylist,
+  deletePlaylist,
+  getUserPlaylists,
+  getPlaylistCount,
+  getMusicSettings,
+  setMusicSettings,
 };

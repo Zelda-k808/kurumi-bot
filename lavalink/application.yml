@@ -1,0 +1,91 @@
+server:
+  port: 2333
+  address: 127.0.0.1
+
+lavalink:
+  plugins:
+    # LavaSrc — Spotify, Apple Music, Deezer metadata resolution
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.2"
+      repository: "https://maven.lavalink.dev/releases"
+    # YouTube source — reliable YouTube with OAuth support
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.11.5"
+      repository: "https://maven.lavalink.dev/releases"
+
+  server:
+    password: "kurumi-music-2024"
+    sources:
+      youtube: false   # Disabled — handled by youtube-plugin above
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    youtubePlaylistLoadLimit: 100
+    playerUpdateInterval: 3
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    clients:
+      - MUSIC
+      - WEB
+      - ANDROID
+    oauth:
+      enabled: false
+      # Uncomment after first-time OAuth setup:
+      # refreshToken: "YOUR_REFRESH_TOKEN"
+      # skipInitialization: true
+
+  lavasrc:
+    providers:
+      - "ytsearch:%QUERY%"
+      - "scsearch:%QUERY%"
+    sources:
+      spotify: true
+      applemusic: true
+      deezer: false
+      yandexmusic: false
+    spotify:
+      clientId: "${SPOTIFY_CLIENT_ID:}"
+      clientSecret: "${SPOTIFY_CLIENT_SECRET:}"
+      countryCode: "US"
+      playlistLoadLimit: 100
+      albumLoadLimit: 100
+    applemusic:
+      countryCode: "US"
+    deezer:
+      countryCode: "US"
+      masterDecryptionKey: ""
+
+logging:
+  file:
+    max-history: 7
+    max-size: 10MB
+  level:
+    root: INFO
+    lavalink: INFO
+    dev.lavalink.youtube: WARN
+
+metrics:
+  prometheus:
+    enabled: false
