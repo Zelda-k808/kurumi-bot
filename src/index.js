@@ -29,6 +29,7 @@ const persona = require("./kurumi-persona");
 const { formatTimeAmPmVerbose, DEFAULT_DISPLAY_TIMEZONE } = require("./time-util");
 const dailyWordle = require("./daily-wordle");
 const db = require("./database");
+const llmChat = require("./local-llm");
 
 const guildConnections = new Map();
 /** guildId → voice channel id to rejoin after drops (cleared on /leave). */
@@ -388,6 +389,23 @@ client.once("ready", async () => {
   }, 60_000);
   dailyWordle.tickDailyPost(client).catch((e) => console.error("[daily-wordle] initial tick", e));
 
+  if (llmChat.isEnabled()) {
+    const cfg = llmChat.getConfig();
+    if (cfg.misconfiguredOnRender) {
+      console.warn(
+        "[local-llm] OLLAMA_HOST is localhost but this process is on Render — set OLLAMA_HOST to your PC/VPS URL in Render Environment (see docs/ollama-remote.md)"
+      );
+    }
+    const probe = await llmChat.probe(true);
+    if (probe.ok) {
+      console.log(`[local-llm] ready · ${cfg.host} · model ${cfg.model}`);
+    } else {
+      console.warn(`[local-llm] offline — ${probe.reason} (chat uses persona fallback)`);
+    }
+  } else {
+    console.log("[local-llm] disabled (OLLAMA_ENABLED=0)");
+  }
+
   // Conversation cleanup: prune stale sessions every minute
   setInterval(() => {
     const now = Date.now();
@@ -452,7 +470,19 @@ async function handleChatReply(message, text, replyOpts, timeLine) {
   const guildId = message.guild?.id || null;
   db.ensureUser(userId, message.author.username);
   const recentChat = db.getRecentChat(userId, 10);
-  const line = persona.chatReply(text, { timeLine, userId, recentChat });
+
+  if (llmChat.isEnabled()) {
+    try {
+      await message.channel.sendTyping();
+    } catch (_) {}
+  }
+
+  // Try LLM first for human-like conversation; fall back to hardcoded persona
+  let line = await llmChat.chat(userId, message.author.username, recentChat, text, timeLine);
+  if (!line) {
+    line = persona.chatReply(text, { timeLine, userId, recentChat });
+  }
+
   await message.reply({ content: line, ...replyOpts });
   const sent = sentiment.analyze(text);
   const intent = persona.detectIntent(text);

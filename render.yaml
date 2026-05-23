@@ -13,3 +13,12 @@ services:
         value: "20"
       - key: DISCORD_TOKEN
         sync: false
+      - key: OLLAMA_ENABLED
+        value: "1"
+      - key: OLLAMA_MODEL
+        value: "kurumi"
+      # Set in dashboard: Tailscale IP, Cloudflare tunnel URL, or VPS (see docs/ollama-remote.md)
+      - key: OLLAMA_HOST
+        sync: false
+      - key: OLLAMA_TIMEOUT_MS
+        value: "120000"

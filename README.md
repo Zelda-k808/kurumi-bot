@@ -41,6 +41,30 @@ npm install
 npm start
 ```
 
+### Kurumi chat with Ollama (local LLM)
+
+Text chat (`kurumi hi`, conversation mode) uses **Ollama** when it is running. Without Ollama, replies fall back to scripted persona lines.
+
+1. Install [Ollama](https://ollama.com/) (Windows: `winget install Ollama.Ollama`), then open the Ollama app once so the server starts.
+2. Build the Kurumi model and pull the base weights (~2 GB):
+
+```bash
+npm run ollama:setup
+```
+
+3. In `.env` (copy from `.env.example`):
+
+```env
+OLLAMA_ENABLED=1
+OLLAMA_MODEL=kurumi
+OLLAMA_HOST=http://127.0.0.1:11434
+```
+
+4. Verify: `npm run ollama:probe` (exit code 0 = ready).
+5. Start the bot: `npm start`. On login you should see `[local-llm] ready · … · model kurumi`.
+
+**Render / cloud:** on your PC run `npm run ollama:remote` (Cloudflare tunnel), then paste `data/render-ollama-env.txt` into Render Environment. See **[docs/ollama-remote.md](docs/ollama-remote.md)**. Optional: `RENDER_API_KEY` + `RENDER_SERVICE_ID` → `npm run render:ollama`.
+
 Global slash commands may take a short time to appear after first startup.
 
 ## 4) Commands
@@ -60,7 +84,8 @@ Render runs this as a **Web Service**: Node binds to **`PORT`** (set by Render) 
 2. In [Render Dashboard](https://dashboard.render.com): **New** → **Blueprint**.
 3. Connect the repository and select the branch. Render reads `render.yaml`.
 4. When prompted, add **`DISCORD_TOKEN`** (your bot token). Do not wrap it in quotes.
-5. Create / deploy. After the first deploy, confirm under the service **Environment** that `DISCORD_TOKEN` is present.
+5. For LLM chat on Render, add **`OLLAMA_HOST`** (your PC/VPS Ollama URL — see [docs/ollama-remote.md](docs/ollama-remote.md)). Example: `http://100.64.12.34:11434` (Tailscale) or a Cloudflare tunnel URL.
+6. Create / deploy. After the first deploy, confirm under the service **Environment** that `DISCORD_TOKEN` and `OLLAMA_HOST` are present.
 
 ### Option B — Web Service (manual)
 

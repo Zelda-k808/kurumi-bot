@@ -1,3 +1,7 @@
 node_modules/
 .env
 npm-debug.log*
+data/ollama-tunnel-url.txt
+data/render-ollama-env.txt
+data/ollama-tunnel.log
+data/ollama-tunnel.log.err

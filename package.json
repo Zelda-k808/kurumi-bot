@@ -5,7 +5,13 @@
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "ollama:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ollama.ps1",
+    "ollama:probe": "node -e \"require('./src/local-llm').probe(true).then(r=>{console.log(r);process.exit(r.ok?0:1)})\"",
+    "ollama:bind-lan": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ollama-bind-lan.ps1",
+    "ollama:tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ollama-tunnel.ps1",
+    "ollama:remote": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-ollama-remote.ps1",
+    "render:ollama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply-render-ollama.ps1"
   },
   "engines": {
     "node": "20.x"
