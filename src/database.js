@@ -149,6 +149,15 @@ async function init() {
       updated_at    INTEGER DEFAULT (unixepoch()),
       UNIQUE(user_id, name)
     )`,
+    `CREATE TABLE IF NOT EXISTS music_history (
+      guild_id      TEXT NOT NULL,
+      user_id       TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      author        TEXT,
+      uri           TEXT,
+      played_at     INTEGER DEFAULT (unixepoch())
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_music_history_user ON music_history (user_id)`,
     `CREATE TABLE IF NOT EXISTS music_settings (
       guild_id          TEXT PRIMARY KEY,
       dj_role_id        TEXT,
@@ -156,7 +165,8 @@ async function init() {
       default_volume    INTEGER DEFAULT 80,
       stay_24_7         INTEGER DEFAULT 0,
       autoplay          INTEGER DEFAULT 0,
-      idle_timeout_ms   INTEGER DEFAULT 300000
+      idle_timeout_ms   INTEGER DEFAULT 300000,
+      active_filter     TEXT
     )`,
   ], "write");
 }
@@ -528,6 +538,24 @@ async function getPlaylistCount(userId) {
   return row?.c || 0;
 }
 
+/* ───────────── Music History ───────────── */
+
+async function logMusicPlay(guildId, userId, track) {
+  await run(`
+    INSERT INTO music_history (guild_id, user_id, title, author, uri)
+    VALUES (?, ?, ?, ?, ?)
+  `, [guildId, userId, track.title, track.author, track.uri]);
+}
+
+async function getRecentUserTracks(userId, limit = 10) {
+  return all(`
+    SELECT title, author, uri FROM music_history 
+    WHERE user_id = ? 
+    ORDER BY played_at DESC 
+    LIMIT ?
+  `, [userId, limit]);
+}
+
 /* ───────────── Music Settings (per guild) ───────────── */
 
 async function getMusicSettings(guildId) {
@@ -536,15 +564,16 @@ async function getMusicSettings(guildId) {
 
 async function setMusicSettings(guildId, settings) {
   await run(`
-    INSERT INTO music_settings (guild_id, dj_role_id, music_channel_id, default_volume, stay_24_7, autoplay, idle_timeout_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO music_settings (guild_id, dj_role_id, music_channel_id, default_volume, stay_24_7, autoplay, idle_timeout_ms, active_filter)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(guild_id) DO UPDATE SET
       dj_role_id = excluded.dj_role_id,
       music_channel_id = excluded.music_channel_id,
       default_volume = excluded.default_volume,
       stay_24_7 = excluded.stay_24_7,
       autoplay = excluded.autoplay,
-      idle_timeout_ms = excluded.idle_timeout_ms
+      idle_timeout_ms = excluded.idle_timeout_ms,
+      active_filter = excluded.active_filter
   `, [
     guildId,
     settings.dj_role_id || null,
@@ -553,6 +582,7 @@ async function setMusicSettings(guildId, settings) {
     settings.stay_24_7 ? 1 : 0,
     settings.autoplay ? 1 : 0,
     settings.idle_timeout_ms ?? 300000,
+    settings.active_filter || null,
   ]);
 }
 
@@ -598,6 +628,8 @@ module.exports = {
   deletePlaylist,
   getUserPlaylists,
   getPlaylistCount,
+  logMusicPlay,
+  getRecentUserTracks,
   getMusicSettings,
   setMusicSettings,
 };

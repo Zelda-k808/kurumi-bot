@@ -1,8 +1,12 @@
 /* ───────────── Queue Manager — per-guild music queue ───────────── */
 
 let discordClient = null;
+let db = null;
 function setClient(client) {
   discordClient = client;
+}
+function setDb(database) {
+  db = database;
 }
 
 const { getShoukaku, getNode } = require("./shoukaku-client");
@@ -33,6 +37,8 @@ class GuildQueue {
     this.tracks = [];
     /** @type {object | null} */
     this.current = null;
+    /** @type {object | null} */
+    this.previous = null;
     this.loop = LOOP.OFF;
     this.volume = DEFAULT_VOLUME;
     this.paused = false;
@@ -55,11 +61,28 @@ class GuildQueue {
     this.onTrackError = null;
     /** Track skip votes */
     this.skipVotes = new Set();
+    /** Flag to prevent concurrent playNext calls */
+    this.isPlayingNext = false;
   }
 
   /** Connect to voice and create a Lavalink player. */
   async connect() {
     const sk = getShoukaku();
+
+    // Load settings from DB if available
+    if (db) {
+      try {
+        const settings = await db.getMusicSettings(this.guildId);
+        if (settings) {
+          this.volume = settings.default_volume ?? this.volume;
+          this.stay247 = !!settings.stay_24_7;
+          this.autoplay = !!settings.autoplay;
+          this.activeFilter = settings.active_filter || null;
+        }
+      } catch (err) {
+        console.error(`[music] Error loading settings for guild ${this.guildId}:`, err);
+      }
+    }
 
     this.player = await sk.joinVoiceChannel({
       guildId: this.guildId,
@@ -71,10 +94,38 @@ class GuildQueue {
     // Apply default volume
     await this.player.setGlobalVolume(this.volume);
 
+    // Apply active filter if any
+    if (this.activeFilter) {
+      const preset = getPreset(this.activeFilter);
+      if (preset) {
+        await this.player.setFilters(preset.filters);
+      }
+    }
+
+    // Track start event
+    this.player.on("start", (data) => {
+      console.log(`[music] Track started in guild ${this.guildId}: ${this.current?.title}`);
+      this.isPlayingNext = false;
+    });
+
     // Track end event
     this.player.on("end", async (data) => {
       console.log(`[music] Shoukaku track end event for guild ${this.guildId}: reason=${data.reason}`);
       if (data.reason === "replaced" || data.reason === "cleanup") return; // Ignore replaced / session cleanup
+      
+      if (data.reason === "loadFailed") {
+        console.error(`[music] Track load failed in guild ${this.guildId}`);
+        if (discordClient && this.textChannelId && this.current) {
+          try {
+            const channel = discordClient.channels.cache.get(this.textChannelId) || 
+                            await discordClient.channels.fetch(this.textChannelId).catch(() => null);
+            if (channel) {
+              await channel.send(`❌ Failed to play **${this.current.title}**. Skipping to next...`).catch(() => null);
+            }
+          } catch (_) {}
+        }
+      }
+
       await this._handleTrackEnd();
     });
 
@@ -86,12 +137,15 @@ class GuildQueue {
 
     this.player.on("exception", (data) => {
       console.error(`[music] Track exception in guild ${this.guildId}:`, data);
-      if (this.onTrackError) this.onTrackError(this, data);
+      // Don't notify twice if end also fires
+      // if (this.onTrackError) this.onTrackError(this, data);
       this._handleTrackEnd().catch(console.error);
     });
 
     this.player.on("closed", (data) => {
       console.warn(`[music] Voice connection closed in guild ${this.guildId}:`, data);
+      // Clean up internal player reference if it's actually gone
+      this.player = null;
     });
 
     this._clearIdleTimer();
@@ -140,6 +194,20 @@ class GuildQueue {
   /** Skip the current track. */
   async skip() {
     if (!this.player) return false;
+    await this.player.stopTrack();
+    return true;
+  }
+
+  /** Go back to the previous track. */
+  async back() {
+    if (!this.player || !this.previous) return false;
+    // Add current back to the front of the queue if it exists
+    if (this.current) {
+      this.tracks.unshift(this.current);
+    }
+    const prev = this.previous;
+    this.previous = null; // Prevent infinite loop back
+    this.tracks.unshift(prev);
     await this.player.stopTrack();
     return true;
   }
@@ -278,6 +346,18 @@ class GuildQueue {
 
     await this.player.setFilters(preset.filters);
     this.activeFilter = presetName === "clear" ? null : presetName;
+
+    // Persist to DB
+    if (db) {
+      try {
+        const settings = (await db.getMusicSettings(this.guildId)) || {};
+        settings.active_filter = this.activeFilter;
+        await db.setMusicSettings(this.guildId, settings);
+      } catch (err) {
+        console.error(`[music] Error saving filter for guild ${this.guildId}:`, err);
+      }
+    }
+
     return preset;
   }
 
@@ -295,7 +375,8 @@ class GuildQueue {
 
   /** Play the next track in the queue. */
   async _playNext() {
-    if (!this.player) return;
+    if (!this.player || this.isPlayingNext) return;
+    this.isPlayingNext = true;
     this.skipVotes = new Set();
 
     // Loop track mode — replay current
@@ -312,9 +393,20 @@ class GuildQueue {
       this.tracks.push(this.current);
     }
 
+    if (this.current) {
+      this.previous = this.current;
+    }
+
     const next = this.tracks.shift();
     if (!next) {
+      if (this.autoplay && this.previous) {
+        this.isPlayingNext = false; // Allow autoplay to trigger _playNext via enqueue
+        const success = await this._handleAutoplay();
+        if (success) return;
+      }
+
       this.current = null;
+      this.isPlayingNext = false;
       this._clearUpdateInterval();
       if (this.onQueueEnd) this.onQueueEnd(this);
       
@@ -344,6 +436,12 @@ class GuildQueue {
     }
 
     this.current = next;
+    
+    // Log play to history
+    if (db && next.requesterId) {
+      db.logMusicPlay(this.guildId, next.requesterId, next).catch(console.error);
+    }
+
     await this.player.playTrack({ track: { encoded: next.encoded } });
     await this._sendNowPlaying();
     this._startUpdateInterval();
@@ -400,6 +498,60 @@ class GuildQueue {
   /** Handle the end of a track. */
   async _handleTrackEnd() {
     await this._playNext();
+  }
+
+  /** Attempt to find and play a related track for autoplay. */
+  async _handleAutoplay() {
+    if (!this.previous) return false;
+
+    try {
+      let query = "";
+      
+      // Try to get user preferences from DB if possible
+      if (db && this.previous.requesterId) {
+        const recent = await db.getRecentUserTracks(this.previous.requesterId, 5);
+        if (recent.length > 1) {
+          // Pick a random track from recent history (but not the one that just finished)
+          const candidates = recent.filter(t => t.uri !== this.previous.uri);
+          if (candidates.length > 0) {
+            const pick = candidates[Math.floor(Math.random() * candidates.length)];
+            query = pick.author ? `${pick.author} ${pick.title}` : pick.title;
+          }
+        }
+      }
+
+      // Fallback: use current track's author/title to find something related
+      if (!query) {
+        query = `${this.previous.author} related`;
+      }
+
+      console.log(`[music] Autoplay triggered in ${this.guildId}. Query: ${query}`);
+      
+      const { resolve } = require("./track-resolver");
+      const result = await resolve(query, "autoplay", "Kurumi Autoplay");
+      
+      if (result.tracks.length > 0) {
+        // Avoid playing the exact same track again if possible
+        const nextTrack = result.tracks.find(t => t.uri !== this.previous.uri) || result.tracks[0];
+        
+        // Notify about autoplay
+        if (discordClient && this.textChannelId) {
+          try {
+            const channel = discordClient.channels.cache.get(this.textChannelId) || 
+                            await discordClient.channels.fetch(this.textChannelId).catch(() => null);
+            if (channel) {
+              await channel.send(`✨ Autoplay: Queued **[${nextTrack.title}](${nextTrack.uri})** based on your preferences, Master~`).catch(() => null);
+            }
+          } catch (_) {}
+        }
+
+        await this.enqueue([nextTrack]);
+        return true;
+      }
+    } catch (err) {
+      console.error("[music] Autoplay error:", err);
+    }
+    return false;
   }
 
   _startIdleTimer() {
@@ -480,6 +632,7 @@ module.exports = {
   remove,
   getAll,
   setClient,
+  setDb,
   GuildQueue,
   LOOP,
   LOOP_LABELS,

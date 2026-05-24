@@ -62,7 +62,8 @@ function normalizeTrack(track, requesterId, requesterName) {
  * @returns {string}
  */
 function formatDuration(ms) {
-  if (!ms || ms <= 0) return "LIVE";
+  if (ms === 0) return "0:00";
+  if (!ms || ms < 0) return "LIVE";
   const totalSec = Math.floor(ms / 1000);
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
@@ -109,6 +110,13 @@ async function resolve(query, requesterId, requesterName) {
   result = await node.rest.resolve(`amsearch:${trimmed}`);
   if (result && result.loadType !== "empty" && result.loadType !== "error" && result.data && result.data.length > 0) {
     return processResult(result, requesterId, requesterName, "applemusic", trimmed);
+  }
+
+  // 4. Final Fallback: Try YouTube Search
+  console.log(`[music] Apple Music search empty/error for "${trimmed}" — trying YouTube fallback…`);
+  result = await node.rest.resolve(`ytsearch:${trimmed}`);
+  if (result && result.loadType !== "empty" && result.loadType !== "error" && result.data && result.data.length > 0) {
+    return processResult(result, requesterId, requesterName, "youtube", trimmed);
   }
 
   // All searches failed

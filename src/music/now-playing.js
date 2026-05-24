@@ -16,10 +16,10 @@ const { LOOP, LOOP_LABELS } = require("./queue-manager");
  * @returns {string}
  */
 function progressBar(currentMs, totalMs) {
-  const PROGRESS_LENGTH = 15;
-  const BAR_FILLED = "▬";
+  const PROGRESS_LENGTH = 18;
+  const BAR_FILLED = "━";
   const BAR_EMPTY = "─";
-  const BAR_SLIDER = "🔘";
+  const BAR_SLIDER = "⚪"; // Sleeker slider
 
   if (!totalMs || totalMs <= 0) return `${BAR_FILLED.repeat(PROGRESS_LENGTH)} 🔴 LIVE`;
   const pct = Math.min(currentMs / totalMs, 1);
@@ -28,7 +28,7 @@ function progressBar(currentMs, totalMs) {
 
   let bar = "";
   if (filledCount > 0) {
-    bar += BAR_FILLED.repeat(filledCount - 1);
+    bar += BAR_FILLED.repeat(Math.max(0, filledCount - 1));
   }
   bar += BAR_SLIDER;
   if (emptyCount > 0) {
@@ -59,35 +59,46 @@ function buildEmbed(queue) {
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setAuthor({ name: "♪ Now Playing", iconURL: "https://cdn.discordapp.com/emojis/1071857438042984510.gif" })
+    .setAuthor({ 
+      name: "Now Playing — Kurumi Music", 
+      iconURL: "https://cdn.discordapp.com/emojis/1071857438042984510.gif" 
+    })
     .setTitle(track.title)
     .setURL(track.uri || null)
     .setDescription(
       `*"${quote}"*\n\n` +
-      `${bar} \`[${formatDuration(position)} / ${formatDuration(track.duration)}]\`\n` +
-      `${status ? `\n*${status}*` : ""}`
+      `${bar}\n` +
+      `**${formatDuration(position)} / ${formatDuration(track.duration)}**\n` +
+      `${status ? `\n${status}` : ""}`
     );
 
-  // Use setThumbnail instead of setImage to display the artwork compactly on the right
   if (track.artworkUrl) {
     embed.setThumbnail(track.artworkUrl);
   }
 
-  // Exactly 3 inline fields (fits perfectly in a single row without vertical stacking)
   embed.addFields(
-    { name: "👤 Artist", value: track.author || "Unknown", inline: true },
-    { name: "🌐 Platform", value: _getSourceName(track.sourceName), inline: true },
-    { name: "📥 Requested By", value: displayName, inline: true }
+    { name: "👤 Artist", value: `\`${track.author || "Unknown"}\``, inline: true },
+    { name: "🌐 Source", value: _getSourceName(track.sourceName), inline: true },
+    { name: "📥 Master", value: `\`${displayName}\``, inline: true }
   );
 
   if (queue.tracks.length > 0) {
-    const upNextStr = queue.tracks.slice(0, 2).map((t, i) =>
-      `\`${i + 1}.\` **[${_truncate(t.title, 35)}](${t.uri || ""})** — *${formatDuration(t.duration)}*`
-    ).join("\n") + (queue.tracks.length > 2 ? `\n*... and ${queue.tracks.length - 2} more tracks*` : "");
-    embed.addFields({ name: "⏭️ Up Next", value: upNextStr, inline: false });
+    const totalDuration = queue.getQueueDuration();
+    const upNextStr = queue.tracks.slice(0, 3).map((t, i) =>
+      `\`${i + 1}.\` **[${_truncate(t.title, 40)}](${t.uri || ""})**`
+    ).join("\n") + (queue.tracks.length > 3 ? `\n*... and ${queue.tracks.length - 3} more tracks*` : "");
+    
+    embed.addFields({ 
+      name: `⏭️ Up Next (${queue.tracks.length} tracks • ${formatDuration(totalDuration)})`, 
+      value: upNextStr, 
+      inline: false 
+    });
   }
 
-  embed.setFooter({ text: `Kurumi Music System • Master's playlist` });
+  embed.setFooter({ 
+    text: `Volume: ${queue.volume}% • Filter: ${queue.activeFilter || "None"} • Loop: ${LOOP_LABELS[queue.loop]}`,
+    iconURL: "https://cdn.discordapp.com/emojis/1089242562447384667.png"
+  });
 
   return embed;
 }
@@ -98,33 +109,80 @@ function buildEmbed(queue) {
  * @returns {ActionRowBuilder}
  */
 function buildButtons(queue) {
-  const pauseBtn = new ButtonBuilder()
-    .setCustomId("music_pause")
-    .setEmoji(queue.paused ? "▶️" : "⏸️")
-    .setStyle(ButtonStyle.Secondary);
-
-  const skipBtn = new ButtonBuilder()
-    .setCustomId("music_skip")
-    .setEmoji("⏭️")
-    .setStyle(ButtonStyle.Primary);
-
-  const stopBtn = new ButtonBuilder()
-    .setCustomId("music_stop")
-    .setEmoji("⏹️")
-    .setStyle(ButtonStyle.Danger);
-
-  const shuffleBtn = new ButtonBuilder()
-    .setCustomId("music_shuffle")
-    .setEmoji("🔀")
-    .setStyle(ButtonStyle.Secondary);
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("music_back")
+      .setEmoji("⏮️")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!queue.previous),
+    new ButtonBuilder()
+      .setCustomId("music_rewind")
+      .setEmoji("⏪")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_pause")
+      .setEmoji(queue.paused ? "▶️" : "⏸️")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_forward")
+      .setEmoji("⏩")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_skip")
+      .setEmoji("⏭️")
+      .setStyle(ButtonStyle.Primary)
+  );
 
   const loopEmoji = queue.loop === LOOP.TRACK ? "🔂" : queue.loop === LOOP.QUEUE ? "🔁" : "➡️";
-  const loopBtn = new ButtonBuilder()
-    .setCustomId("music_loop")
-    .setEmoji(loopEmoji)
-    .setStyle(queue.loop !== LOOP.OFF ? ButtonStyle.Success : ButtonStyle.Secondary);
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("music_stop")
+      .setEmoji("⏹️")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId("music_shuffle")
+      .setEmoji("🔀")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_loop")
+      .setEmoji(loopEmoji)
+      .setStyle(queue.loop !== LOOP.OFF ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_volume_down")
+      .setEmoji("🔉")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_volume_up")
+      .setEmoji("🔊")
+      .setStyle(ButtonStyle.Secondary)
+  );
 
-  return new ActionRowBuilder().addComponents(pauseBtn, skipBtn, stopBtn, shuffleBtn, loopBtn);
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("music_lyrics")
+      .setLabel("Lyrics")
+      .setEmoji("🎤")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_bass")
+      .setLabel("Bass")
+      .setEmoji("🔊")
+      .setStyle(queue.activeFilter === "bassboost" ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_autoplay")
+      .setEmoji("✨")
+      .setStyle(queue.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_queue")
+      .setEmoji("📋")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("music_refresh")
+      .setEmoji("🔄")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return [row1, row2, row3];
 }
 
 /**
@@ -135,7 +193,7 @@ function buildButtons(queue) {
 function buildNowPlaying(queue) {
   return {
     embeds: [buildEmbed(queue)],
-    components: queue.current ? [buildButtons(queue)] : [],
+    components: queue.current ? buildButtons(queue) : [],
   };
 }
 

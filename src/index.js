@@ -22,6 +22,11 @@ process.on("unhandledRejection", (reason) => console.error("unhandledRejection:"
 const http = require("http");
 const Sentiment = require("sentiment");
 const sentiment = new Sentiment();
+const oldExit = process.exit;
+process.exit = function(code) {
+  console.error("PROCESS EXIT CALLED WITH CODE", code, new Error().stack);
+  oldExit(code);
+};
 const {
   Client,
   GatewayIntentBits,
@@ -543,6 +548,7 @@ client.once("ready", async () => {
 
   /* ── Set music DB reference (Shoukaku is already initialized before login) ── */
   setMusicDb(db);
+  musicQueue.setDb(db);
 
   if (llmChat.isEnabled()) {
     const cfg = llmChat.getConfig();
@@ -657,7 +663,16 @@ async function handleChatReply(message, text, replyOpts, timeLine) {
     line = persona.chatReply(text, { timeLine, userId, recentChat });
   }
 
-  await message.reply({ content: line, ...replyOpts });
+  try {
+    await message.reply({ content: line, ...replyOpts });
+  } catch (err) {
+    if (err.code === 50035) {
+      // If reply fails (e.g. message deleted), try sending to channel instead
+      await message.channel.send({ content: line }).catch(() => null);
+    } else {
+      console.error("[kurumi text] reply error:", err);
+    }
+  }
   const sent = sentiment.analyze(text);
   const intent = persona.detectIntent(text);
   await db.logChat(userId, guildId, text, line, sent.score, intent.type);

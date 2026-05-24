@@ -101,6 +101,25 @@ const PRESETS = {
     },
   },
 
+  pure: {
+    label: "💎 Pure Audio",
+    description: "Crystal clear Hi-Fi profile",
+    filters: {
+      equalizer: [
+        { band: 0, gain: 0.15 },
+        { band: 1, gain: 0.1 },
+        { band: 2, gain: 0.05 },
+        { band: 3, gain: 0.0 },
+        { band: 4, gain: 0.0 },
+        { band: 5, gain: 0.0 },
+        { band: 6, gain: 0.05 },
+        { band: 7, gain: 0.1 },
+        { band: 8, gain: 0.15 },
+        { band: 9, gain: 0.2 },
+      ],
+    },
+  },
+
   clear: {
     label: "✨ Clear",
     description: "Reset all filters",

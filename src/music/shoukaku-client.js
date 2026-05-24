@@ -30,8 +30,9 @@ function init(client) {
   shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
     moveOnDisconnect: true,
     resume: true,
-    reconnectTries: 5,
-    reconnectInterval: 5000,
+    reconnectTries: 10,
+    reconnectInterval: 10000,
+    restTimeout: 15000,
   });
 
   shoukaku.on("ready", (name, reconnected) => {

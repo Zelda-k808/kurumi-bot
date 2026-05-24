@@ -45,7 +45,8 @@ function requireVoice(interaction) {
 
 function requireQueue(guildId) {
   const q = queueManager.get(guildId);
-  if (!q || !q.current) {
+  // Ensure we have a valid queue AND a player that is actually connected/active
+  if (!q || !q.current || !q.player) {
     return { ok: false, text: "Nothing is playing right now, Master." };
   }
   return { ok: true, queue: q };
@@ -75,7 +76,7 @@ async function handlePlay(interaction) {
     }
 
     let q = queueManager.get(guildId);
-    if (!q) {
+    if (!q || !q.player) {
       q = queueManager.getOrCreate(guildId, interaction.channelId, voice.channel.id);
       await q.connect();
     }
@@ -344,6 +345,13 @@ async function handleAutoplay(interaction) {
   const q = queueManager.get(interaction.guildId);
   if (!q) return interaction.reply(kurumiMsg("No active music session, Master."));
   q.autoplay = !q.autoplay;
+  
+  if (db) {
+    const settings = (await db.getMusicSettings(interaction.guildId)) || {};
+    settings.autoplay = q.autoplay ? 1 : 0;
+    await db.setMusicSettings(interaction.guildId, settings);
+  }
+
   return interaction.reply(kurumiMsg(`✨ Autoplay is now **${q.autoplay ? "ON" : "OFF"}**, Master.`));
 }
 
@@ -352,7 +360,7 @@ async function handle247(interaction) {
   if (!voice.ok) return interaction.reply(kurumiMsg(voice.text));
 
   let q = queueManager.get(interaction.guildId);
-  if (!q) {
+  if (!q || !q.player) {
     q = queueManager.getOrCreate(interaction.guildId, interaction.channelId, voice.channel.id);
     await q.connect();
   }
@@ -393,7 +401,7 @@ async function handlePlaylist(interaction) {
     if (!tracks.length) return interaction.editReply({ content: `Playlist **${name}** is empty, Master.` });
 
     let q = queueManager.get(interaction.guildId);
-    if (!q) {
+    if (!q || !q.player) {
       q = queueManager.getOrCreate(interaction.guildId, interaction.channelId, voice.channel.id);
       await q.connect();
     }
@@ -533,11 +541,14 @@ async function handleMusicButton(interaction) {
   const id = interaction.customId;
   if (!id.startsWith("music_")) return false;
 
-  // Avoid handling already acknowledged interactions (helps with duplicate triggers or failovers)
+  // Avoid handling already acknowledged interactions
   if (interaction.deferred || interaction.replied) return true;
 
   const q = queueManager.get(interaction.guildId);
-  if (!q || !q.current) {
+  // Buttons that DO NOT require an active player/queue
+  const nonPlaybackButtons = ["music_refresh"]; 
+  
+  if (!q || !q.current || (!q.player && !nonPlaybackButtons.includes(id))) {
     try {
       await interaction.reply(kurumiMsg("Nothing is playing right now, Master."));
     } catch (_) {}
@@ -560,6 +571,19 @@ async function handleMusicButton(interaction) {
         break;
       }
 
+      case "music_back":
+        await q.back();
+        shouldUpdateEmbed = false;
+        break;
+
+      case "music_rewind":
+        await q.seek(q.getPosition() - 5000);
+        break;
+
+      case "music_forward":
+        await q.seek(q.getPosition() + 5000);
+        break;
+
       case "music_stop":
         await q.stop();
         shouldUpdateEmbed = false;
@@ -571,6 +595,78 @@ async function handleMusicButton(interaction) {
 
       case "music_loop":
         q.cycleLoop();
+        break;
+
+      case "music_bass":
+        if (q.activeFilter === "bassboost") {
+          await q.setFilter("clear");
+        } else {
+          await q.setFilter("bassboost");
+        }
+        break;
+
+      case "music_volume_down":
+        await q.setVolume(q.volume - 10);
+        break;
+
+      case "music_volume_up":
+        await q.setVolume(q.volume + 10);
+        break;
+
+      case "music_lyrics": {
+        const result = await lyricsClient.searchLyrics(q.current.title, q.current.author);
+        if (result) {
+          const pages = lyricsClient.paginateLyrics(result.lyrics);
+          const embed = new EmbedBuilder()
+            .setColor(KURUMI_COLOR)
+            .setTitle(`🎤 ${result.title}`)
+            .setDescription(pages[0])
+            .setFooter({ text: `Artist: ${result.artist}` });
+          await interaction.followUp({ embeds: [embed], ephemeral: true });
+        } else {
+          await interaction.followUp({ content: "No lyrics found, Master.", ephemeral: true });
+        }
+        break;
+      }
+
+      case "music_autoplay":
+        q.autoplay = !q.autoplay;
+        if (db) {
+          const settings = (await db.getMusicSettings(interaction.guildId)) || {};
+          settings.autoplay = q.autoplay ? 1 : 0;
+          await db.setMusicSettings(interaction.guildId, settings);
+        }
+        break;
+
+      case "music_queue": {
+        const perPage = 10;
+        const totalPages = Math.max(1, Math.ceil(q.tracks.length / perPage));
+        const slice = q.tracks.slice(0, perPage);
+
+        let desc = "";
+        if (q.current) {
+          desc += `**Now Playing:** [${q.current.title}](${q.current.uri})\n\n`;
+        }
+
+        if (slice.length > 0) {
+          desc += slice.map((t, i) =>
+            `\`${i + 1}.\` **${t.title}** — ${trackResolver.formatDuration(t.duration)}`
+          ).join("\n");
+        } else {
+          desc += "*No more tracks in the queue.*";
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(KURUMI_COLOR)
+          .setTitle("📋 Queue")
+          .setDescription(desc)
+          .setFooter({ text: `Page 1/${totalPages} • ${q.tracks.length} tracks` });
+        await interaction.followUp({ embeds: [embed], ephemeral: true });
+        break;
+      }
+
+      case "music_refresh":
+        // Just refresh the embed
         break;
 
       default:
