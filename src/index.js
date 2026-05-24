@@ -710,15 +710,15 @@ async function handleMusicTextCommand(message, parsed, replyOpts) {
         return;
       }
       let q = musicQueue.get(gid);
-      if (!q) {
+      if (!q || !q.player) {
         q = musicQueue.getOrCreate(gid, message.channelId, vc.id);
         await q.connect();
       }
-      const count = await q.enqueue(tracks);
+      const count = await q.enqueue(tracks, message);
       if (playlistName) {
         await message.reply({ content: `📋 Queued **${count}** tracks from **${playlistName}**, Master~`, ...replyOpts });
       } else if (count === 1 && q.current === tracks[0] && q.tracks.length === 0) {
-        await message.reply({ content: `🎶 Now playing **${tracks[0].title}**, Master~`, ...replyOpts });
+        // Embed was already sent by enqueue -> _playNext -> _sendNowPlaying(message)
       } else {
         await message.reply({ content: `🎵 Queued **${tracks[0].title}** — position #${q.tracks.length}, Master~`, ...replyOpts });
       }
@@ -727,7 +727,7 @@ async function handleMusicTextCommand(message, parsed, replyOpts) {
 
     if (cmd === "247") {
       let q = musicQueue.get(gid);
-      if (!q) {
+      if (!q || !q.player) {
         q = musicQueue.getOrCreate(gid, message.channelId, vc.id);
         await q.connect();
       }
@@ -740,7 +740,8 @@ async function handleMusicTextCommand(message, parsed, replyOpts) {
 
   // Commands that need an active queue
   const q = musicQueue.get(gid);
-  if (!q || !q.current) {
+  // Ensure we have a valid queue AND a player that is actually connected/active
+  if (!q || !q.current || !q.player) {
     if (cmd === "queue" || cmd === "nowplaying") {
       await message.reply({ content: "Nothing is playing, Master.", ...replyOpts });
     } else {
@@ -1117,6 +1118,15 @@ client.on("interactionCreate", async (interaction) => {
   // Handle music button clicks
   if (interaction.isButton()) {
     try { await handleMusicButton(interaction); } catch (e) { console.error("[music] button error:", e); }
+    return;
+  }
+
+  // Handle music select menus (filters)
+  if (interaction.isStringSelectMenu()) {
+    try {
+      const { handleMusicSelectMenu } = require("./music/interaction-handler");
+      await handleMusicSelectMenu(interaction);
+    } catch (e) { console.error("[music] select menu error:", e); }
     return;
   }
 

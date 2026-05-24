@@ -103,9 +103,11 @@ class GuildQueue {
     }
 
     // Track start event
-    this.player.on("start", (data) => {
-      console.log(`[music] Track started in guild ${this.guildId}: ${this.current?.title}`);
+    this.player.on("start", async (data) => {
+      console.log(`[music] Track started event for ${this.guildId}: ${this.current?.title}`);
       this.isPlayingNext = false;
+      this._startUpdateInterval();
+      if (this.onTrackStart) this.onTrackStart(this);
     });
 
     // Track end event
@@ -113,6 +115,7 @@ class GuildQueue {
       console.log(`[music] Shoukaku track end event for guild ${this.guildId}: reason=${data.reason}`);
       if (data.reason === "replaced" || data.reason === "cleanup") return; // Ignore replaced / session cleanup
       
+      this.isPlayingNext = false;
       if (data.reason === "loadFailed") {
         console.error(`[music] Track load failed in guild ${this.guildId}`);
         if (discordClient && this.textChannelId && this.current) {
@@ -132,11 +135,13 @@ class GuildQueue {
     // Track stuck / exception
     this.player.on("stuck", (data) => {
       console.warn(`[music] Track stuck in guild ${this.guildId}:`, data);
+      this.isPlayingNext = false;
       this._handleTrackEnd().catch(console.error);
     });
 
     this.player.on("exception", (data) => {
       console.error(`[music] Track exception in guild ${this.guildId}:`, data);
+      this.isPlayingNext = false;
       // Don't notify twice if end also fires
       // if (this.onTrackError) this.onTrackError(this, data);
       this._handleTrackEnd().catch(console.error);
@@ -144,8 +149,7 @@ class GuildQueue {
 
     this.player.on("closed", (data) => {
       console.warn(`[music] Voice connection closed in guild ${this.guildId}:`, data);
-      // Clean up internal player reference if it's actually gone
-      this.player = null;
+      this.disconnect().catch(console.error);
     });
 
     this._clearIdleTimer();
@@ -178,15 +182,16 @@ class GuildQueue {
   /**
    * Add tracks to the queue and start playing if idle.
    * @param {object[]} tracks — normalized track objects
+   * @param {import("discord.js").Interaction | import("discord.js").Message} interactionOrMessage — optional interaction/message to reply with NP panel
    * @returns {number} number of tracks added
    */
-  async enqueue(tracks) {
+  async enqueue(tracks, interactionOrMessage = null) {
     if (!tracks.length) return 0;
     this.tracks.push(...tracks);
     this._clearIdleTimer();
 
     if (!this.current) {
-      await this._playNext();
+      await this._playNext(interactionOrMessage);
     }
     return tracks.length;
   }
@@ -374,7 +379,7 @@ class GuildQueue {
   // ──── Internal ────
 
   /** Play the next track in the queue. */
-  async _playNext() {
+  async _playNext(interactionOrMessage = null) {
     if (!this.player || this.isPlayingNext) return;
     this.isPlayingNext = true;
     this.skipVotes = new Set();
@@ -382,9 +387,7 @@ class GuildQueue {
     // Loop track mode — replay current
     if (this.loop === LOOP.TRACK && this.current) {
       await this.player.playTrack({ track: { encoded: this.current.encoded } });
-      await this._sendNowPlaying();
-      this._startUpdateInterval();
-      if (this.onTrackStart) this.onTrackStart(this);
+      await this._sendNowPlaying(interactionOrMessage);
       return;
     }
 
@@ -443,30 +446,58 @@ class GuildQueue {
     }
 
     await this.player.playTrack({ track: { encoded: next.encoded } });
-    await this._sendNowPlaying();
-    this._startUpdateInterval();
-    if (this.onTrackStart) this.onTrackStart(this);
+    
+    // Immediate trigger for the embed
+    console.log(`[music] Initial play trigger for ${next.title}`);
+    await this._sendNowPlaying(interactionOrMessage);
   }
 
   /** Send or update Now Playing panel. */
-  async _sendNowPlaying() {
-    if (!discordClient || !this.textChannelId || !this.current) return;
+  async _sendNowPlaying(interactionOrMessage = null) {
+    console.log(`[music] _sendNowPlaying entry for ${this.guildId}`);
+    if (!discordClient || !this.textChannelId || !this.current) {
+      console.warn(`[music] _sendNowPlaying skipped: client=${!!discordClient}, channel=${this.textChannelId}, current=${!!this.current}`);
+      return;
+    }
 
-    // Delete old message
-    if (this.nowPlayingMessage) {
-      try {
-        await this.nowPlayingMessage.delete();
-      } catch (_) {}
+    // If we have an existing message and we're NOT replying to a new one, 
+    // we can just edit it to save API calls, but the user usually prefers a new one at the bottom.
+    // So we'll stick to delete/send for now to ensure visibility.
+
+    const existingMsg = this.nowPlayingMessage;
+    if (existingMsg && !interactionOrMessage) {
       this.nowPlayingMessage = null;
+      try {
+        await existingMsg.delete().catch(() => null);
+      } catch (_) {}
     }
 
     try {
       const { buildNowPlaying } = require("./now-playing");
       const channel = discordClient.channels.cache.get(this.textChannelId) || 
                       await discordClient.channels.fetch(this.textChannelId).catch(() => null);
+      
       if (channel) {
         const payload = buildNowPlaying(this);
-        this.nowPlayingMessage = await channel.send(payload);
+        let newMsg;
+        
+        if (interactionOrMessage) {
+          // Handle both Interaction and Message
+          if (interactionOrMessage.editReply) {
+            // Interaction
+            newMsg = await interactionOrMessage.editReply(payload);
+          } else {
+            // Message
+            newMsg = await interactionOrMessage.reply(payload).catch(() => channel.send(payload));
+          }
+        } else {
+          newMsg = await channel.send(payload);
+        }
+        
+        this.nowPlayingMessage = newMsg;
+        console.log(`[music] Sent now playing message in channel ${this.textChannelId}`);
+      } else {
+        console.error(`[music] Could not find channel ${this.textChannelId} to send now playing`);
       }
     } catch (err) {
       console.error("[music] Error sending now playing message:", err);

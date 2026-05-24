@@ -81,7 +81,7 @@ async function handlePlay(interaction) {
       await q.connect();
     }
 
-    const count = await q.enqueue(tracks);
+    const count = await q.enqueue(tracks, interaction);
 
     if (playlistName) {
       const embed = new EmbedBuilder()
@@ -92,7 +92,8 @@ async function handlePlay(interaction) {
     }
 
     if (count === 1 && q.tracks.length === 0 && q.current === tracks[0]) {
-      return interaction.editReply({ content: `🎶 Now playing **${tracks[0].title}**, Master~` });
+      // Embed was already sent by enqueue -> _playNext -> _sendNowPlaying(interaction)
+      return;
     } else {
       const track = tracks[0];
       const embed = new EmbedBuilder()
@@ -343,7 +344,7 @@ async function handleLyrics(interaction) {
 
 async function handleAutoplay(interaction) {
   const q = queueManager.get(interaction.guildId);
-  if (!q) return interaction.reply(kurumiMsg("No active music session, Master."));
+  if (!q || !q.player) return interaction.reply(kurumiMsg("No active music session, Master."));
   q.autoplay = !q.autoplay;
   
   if (db) {
@@ -597,14 +598,6 @@ async function handleMusicButton(interaction) {
         q.cycleLoop();
         break;
 
-      case "music_bass":
-        if (q.activeFilter === "bassboost") {
-          await q.setFilter("clear");
-        } else {
-          await q.setFilter("bassboost");
-        }
-        break;
-
       case "music_volume_down":
         await q.setVolume(q.volume - 10);
         break;
@@ -687,4 +680,38 @@ async function handleMusicButton(interaction) {
   return true;
 }
 
-module.exports = { handleMusicInteraction, handleMusicButton, setDb, MUSIC_COMMANDS };
+/**
+ * Handle music select menu interactions (filters).
+ * @param {import("discord.js").StringSelectMenuInteraction} interaction
+ * @returns {Promise<boolean>} true if handled
+ */
+async function handleMusicSelectMenu(interaction) {
+  const id = interaction.customId;
+  if (id !== "music_filter_select") return false;
+
+  const q = queueManager.get(interaction.guildId);
+  if (!q || !q.current || !q.player) {
+    try {
+      await interaction.reply(kurumiMsg("Nothing is playing right now, Master."));
+    } catch (_) {}
+    return true;
+  }
+
+  const filterName = interaction.values[0];
+  try {
+    await interaction.deferUpdate();
+    const preset = await q.setFilter(filterName);
+    
+    // Update the embed to reflect the new filter
+    if (q.current) {
+      const np = buildNowPlaying(q);
+      await interaction.editReply(np);
+    }
+  } catch (err) {
+    console.error("[music] Filter select error:", err);
+  }
+
+  return true;
+}
+
+module.exports = { handleMusicInteraction, handleMusicButton, handleMusicSelectMenu, setDb, MUSIC_COMMANDS };

@@ -1,13 +1,16 @@
 /* ───────────── Now Playing Embed + Button Controls ───────────── */
 
-const {
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
+const { 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder 
 } = require("discord.js");
 const { formatDuration } = require("./track-resolver");
 const { LOOP, LOOP_LABELS } = require("./queue-manager");
+const { getPresets } = require("./filters");
 
 /**
  * Build a text progress bar.
@@ -106,7 +109,7 @@ function buildEmbed(queue) {
 /**
  * Build the control button row.
  * @param {import("./queue-manager").GuildQueue} queue
- * @returns {ActionRowBuilder}
+ * @returns {ActionRowBuilder[]}
  */
 function buildButtons(queue) {
   const row1 = new ActionRowBuilder().addComponents(
@@ -164,11 +167,6 @@ function buildButtons(queue) {
       .setEmoji("🎤")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId("music_bass")
-      .setLabel("Bass")
-      .setEmoji("🔊")
-      .setStyle(queue.activeFilter === "bassboost" ? ButtonStyle.Success : ButtonStyle.Secondary),
-    new ButtonBuilder()
       .setCustomId("music_autoplay")
       .setEmoji("✨")
       .setStyle(queue.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary),
@@ -182,7 +180,31 @@ function buildButtons(queue) {
       .setStyle(ButtonStyle.Secondary)
   );
 
-  return [row1, row2, row3];
+  const presets = getPresets();
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId("music_filter_select")
+    .setPlaceholder("🎛️ Select an Audio Filter / Profile...")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Clear Filters")
+        .setDescription("Reset all audio effects to default")
+        .setEmoji("🗑️")
+        .setValue("clear")
+    );
+
+  for (const [id, preset] of Object.entries(presets)) {
+    selectMenu.addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel(preset.label)
+        .setDescription(preset.description)
+        .setValue(id)
+        .setDefault(queue.activeFilter === id)
+    );
+  }
+
+  const row4 = new ActionRowBuilder().addComponents(selectMenu);
+
+  return [row1, row2, row3, row4];
 }
 
 /**

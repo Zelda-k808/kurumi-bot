@@ -156,4 +156,8 @@ function listPresets() {
   }));
 }
 
-module.exports = { getPreset, getPresetNames, listPresets, PRESETS };
+function getPresets() {
+  return PRESETS;
+}
+
+module.exports = { getPreset, getPresetNames, listPresets, getPresets, PRESETS };

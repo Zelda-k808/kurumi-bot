@@ -96,10 +96,16 @@ async function handleVoiceStateUpdate(oldState, newState) {
 }
 
 async function syncGuildOnReady(guild) {
-  for (const vs of guild.voiceStates.cache.values()) {
-    if (shouldTrack(vs.member)) {
-      await startSession(guild.id, vs.id, vs.member.user.username);
+  try {
+    // Fetch members to ensure cache is populated
+    await guild.members.fetch();
+    for (const vs of guild.voiceStates.cache.values()) {
+      if (shouldTrack(vs.member)) {
+        await startSession(guild.id, vs.id, vs.member.user.username);
+      }
     }
+  } catch (err) {
+    console.error(`[voice-xp] sync error for guild ${guild.id}:`, err);
   }
 }
 

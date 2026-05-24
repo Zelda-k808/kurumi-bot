@@ -112,13 +112,6 @@ async function resolve(query, requesterId, requesterName) {
     return processResult(result, requesterId, requesterName, "applemusic", trimmed);
   }
 
-  // 4. Final Fallback: Try YouTube Search
-  console.log(`[music] Apple Music search empty/error for "${trimmed}" — trying YouTube fallback…`);
-  result = await node.rest.resolve(`ytsearch:${trimmed}`);
-  if (result && result.loadType !== "empty" && result.loadType !== "error" && result.data && result.data.length > 0) {
-    return processResult(result, requesterId, requesterName, "youtube", trimmed);
-  }
-
   // All searches failed
   return { tracks: [], playlistName: null, source: "search" };
 }
