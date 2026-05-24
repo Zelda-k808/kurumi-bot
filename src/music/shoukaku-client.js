@@ -28,15 +28,14 @@ function init(client) {
   }];
 
   shoukaku = new Shoukaku(new Connectors.DiscordJS(client), nodes, {
-    moveOnDisconnect: false,
+    moveOnDisconnect: true,
     resume: true,
-    resumeTimeout: 60,
     reconnectTries: 5,
     reconnectInterval: 5000,
   });
 
-  shoukaku.on("ready", (name) => {
-    console.log(`[music] Lavalink node "${name}" is ready`);
+  shoukaku.on("ready", (name, reconnected) => {
+    console.log(`[music] ✓ Lavalink node "${name}" is ready (reconnected=${reconnected})`);
   });
 
   shoukaku.on("error", (name, error) => {
@@ -50,6 +49,21 @@ function init(client) {
   shoukaku.on("disconnect", (name, players, moved) => {
     console.warn(`[music] Lavalink node "${name}" disconnected (players=${players.size}, moved=${moved})`);
   });
+
+  shoukaku.on("raw", (name, json) => {
+    if (json?.op === "ready") {
+      console.log(`[music] Lavalink raw ready event from "${name}":`, JSON.stringify(json));
+    }
+  });
+
+  // Debug: log node states after a delay
+  setTimeout(() => {
+    if (!shoukaku) return;
+    for (const [name, node] of shoukaku.nodes) {
+      const stateNames = { 0: "CONNECTING", 1: "CONNECTED", 2: "DISCONNECTING", 3: "DISCONNECTED" };
+      console.log(`[music] Node "${name}" state: ${stateNames[node.state] || node.state} (${node.state})`);
+    }
+  }, 5000);
 
   return shoukaku;
 }

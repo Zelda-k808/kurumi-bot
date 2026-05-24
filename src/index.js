@@ -541,14 +541,8 @@ client.once("ready", async () => {
 
   voiceXpTracker.attach(client);
 
-  /* ── Initialize music system (Shoukaku → Lavalink) ── */
-  try {
-    shoukakuClient.init(client);
-    setMusicDb(db);
-    console.log("[music] Shoukaku initialized — connecting to Lavalink…");
-  } catch (err) {
-    console.warn("[music] Shoukaku init failed (music features disabled):", err.message);
-  }
+  /* ── Set music DB reference (Shoukaku is already initialized before login) ── */
+  setMusicDb(db);
 
   if (llmChat.isEnabled()) {
     const cfg = llmChat.getConfig();
@@ -695,7 +689,7 @@ async function handleMusicTextCommand(message, parsed, replyOpts) {
     }
 
     if (cmd === "play") {
-      const { tracks, playlistName } = await musicTrackResolver.resolve(parsed.query, uid);
+      const { tracks, playlistName } = await musicTrackResolver.resolve(parsed.query, uid, message.member?.displayName || message.author.username);
       if (!tracks.length) {
         await message.reply({ content: "Couldn't find anything for that, Master~", ...replyOpts });
         return;
@@ -707,12 +701,11 @@ async function handleMusicTextCommand(message, parsed, replyOpts) {
       }
       const count = await q.enqueue(tracks);
       if (playlistName) {
-        await message.reply({ content: `📋 Queued **${count}** tracks from **${playlistName}**`, ...replyOpts });
-      } else if (count === 1 && q.tracks.length === 0) {
-        const np = buildNowPlaying(q);
-        q.nowPlayingMessage = await message.reply(np);
+        await message.reply({ content: `📋 Queued **${count}** tracks from **${playlistName}**, Master~`, ...replyOpts });
+      } else if (count === 1 && q.current === tracks[0] && q.tracks.length === 0) {
+        await message.reply({ content: `🎶 Now playing **${tracks[0].title}**, Master~`, ...replyOpts });
       } else {
-        await message.reply({ content: `🎵 Queued **${tracks[0].title}** — position #${q.tracks.length}`, ...replyOpts });
+        await message.reply({ content: `🎵 Queued **${tracks[0].title}** — position #${q.tracks.length}, Master~`, ...replyOpts });
       }
       return;
     }
@@ -1275,6 +1268,44 @@ client.on("interactionCreate", async (interaction) => {
     default:
   }
 });
+
+/* ───────────── Voice State Update Event ───────────── */
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  if (oldState.member.id === client.user.id) {
+    console.log(`[music] Bot voice state updated: oldChannel=${oldState.channelId}, newChannel=${newState.channelId}`);
+  }
+  // If the bot itself was disconnected from a voice channel
+  if (oldState.member.id === client.user.id && oldState.channelId && !newState.channelId) {
+    // Wait 5 seconds and verify the bot is still disconnected before cleaning up the queue.
+    // This avoids transient state changes (e.g. handshakes, channel moves, region swaps) from killing the active player.
+    setTimeout(async () => {
+      try {
+        const member = newState.guild.members.me || await newState.guild.members.fetch(client.user.id).catch(() => null);
+        console.log(`[music] Disconnect verification: channelId=${member?.voice?.channelId}`);
+        if (member && !member.voice.channelId) {
+          const q = musicQueue.get(oldState.guild.id);
+          if (q) {
+            console.log(`[music] Bot was disconnected from voice channel in guild ${oldState.guild.id} — cleaning up queue`);
+            await q.disconnect();
+          }
+        }
+      } catch (err) {
+        console.error("[music] Error cleaning up queue on disconnect:", err);
+      }
+    }, 5000);
+  }
+});
+
+/* ───────────── Initialize Shoukaku BEFORE login ───────────── */
+/* Shoukaku hooks into the client's 'raw' event to catch the gateway READY
+   packet. If we init after login, it misses the event and never connects. */
+try {
+  shoukakuClient.init(client);
+  musicQueue.setClient(client);
+  console.log("[music] Shoukaku initialized — will connect to Lavalink on gateway READY");
+} catch (err) {
+  console.warn("[music] Shoukaku init failed (music features disabled):", err.message);
+}
 
 /* ───────────── Startup: normal login or standby mode ───────────── */
 if (failover.isStandbyEnabled()) {

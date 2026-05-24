@@ -4,19 +4,19 @@ server:
 
 lavalink:
   plugins:
-    # LavaSrc — Spotify, Apple Music, Deezer metadata resolution
-    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.2"
+    # LavaSrc — Spotify, Apple Music metadata → resolves to SoundCloud/other streams
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
       repository: "https://maven.lavalink.dev/releases"
-    # YouTube source — reliable YouTube with OAuth support
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.11.5"
-      repository: "https://maven.lavalink.dev/releases"
+    # NO youtube-plugin — YouTube actively blocks bots
 
   server:
     password: "kurumi-music-2024"
     sources:
-      youtube: false   # Disabled — handled by youtube-plugin above
+      youtube: false    # Blocked by YouTube — don't use
       bandcamp: true
-      soundcloud: true
+      soundcloud:
+        enabled: true
+        filterPreviewTracks: true  # Primary streaming source
       twitch: true
       vimeo: true
       http: true
@@ -34,31 +34,16 @@ lavalink:
       lowPass: true
     bufferDurationMs: 400
     frameBufferDurationMs: 5000
-    youtubePlaylistLoadLimit: 100
+    opusEncodingQuality: 10
+    resamplingQuality: HIGH
     playerUpdateInterval: 3
-    youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     gc-warnings: true
 
 plugins:
-  youtube:
-    enabled: true
-    allowSearch: true
-    allowDirectVideoIds: true
-    allowDirectPlaylistIds: true
-    clients:
-      - MUSIC
-      - WEB
-      - ANDROID
-    oauth:
-      enabled: false
-      # Uncomment after first-time OAuth setup:
-      # refreshToken: "YOUR_REFRESH_TOKEN"
-      # skipInitialization: true
-
   lavasrc:
     providers:
-      - "ytsearch:%QUERY%"
+      # Search order: SoundCloud first (actual streams), then fallback
       - "scsearch:%QUERY%"
     sources:
       spotify: true
@@ -83,8 +68,8 @@ logging:
     max-size: 10MB
   level:
     root: INFO
-    lavalink: INFO
-    dev.lavalink.youtube: WARN
+    lavalink: DEBUG
+    com.sedmelluq.discord.lavaplayer.source.soundcloud: DEBUG
 
 metrics:
   prometheus:

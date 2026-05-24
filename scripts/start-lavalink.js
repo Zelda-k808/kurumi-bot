@@ -57,6 +57,7 @@ async function main() {
 
   const lavalink = spawn("java", [
     "-Xmx256m",
+    "-Djava.net.preferIPv4Stack=true",
     "-jar", "Lavalink.jar",
   ], {
     cwd: LAVALINK_DIR,
@@ -97,6 +98,14 @@ async function main() {
 
 
   if (startBot) {
+    console.log("[lavalink] Killing old bot instances if any…");
+    try {
+      const { execSync } = require("child_process");
+      execSync("node scripts/kill-old-bot.js", { cwd: path.join(__dirname, ".."), stdio: "inherit" });
+    } catch (err) {
+      console.warn("[lavalink] Warning running kill-old-bot:", err.message);
+    }
+
     console.log("[lavalink] Starting bot…\n");
     botProcess = spawn("node", ["src/index.js"], {
       cwd: path.join(__dirname, ".."),

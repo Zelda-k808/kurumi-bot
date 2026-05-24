@@ -1,5 +1,10 @@
 /* ───────────── Queue Manager — per-guild music queue ───────────── */
 
+let discordClient = null;
+function setClient(client) {
+  discordClient = client;
+}
+
 const { getShoukaku, getNode } = require("./shoukaku-client");
 const trackResolver = require("./track-resolver");
 const { getPreset } = require("./filters");
@@ -40,20 +45,23 @@ class GuildQueue {
     this.idleTimer = null;
     /** @type {import("discord.js").Message | null} */
     this.nowPlayingMessage = null;
+    /** @type {NodeJS.Timeout | null} */
+    this.updateInterval = null;
     /** Callback when track starts — set by integration layer */
     this.onTrackStart = null;
     /** Callback when queue ends — set by integration layer */
     this.onQueueEnd = null;
     /** Callback when track errors — set by integration layer */
     this.onTrackError = null;
+    /** Track skip votes */
+    this.skipVotes = new Set();
   }
 
   /** Connect to voice and create a Lavalink player. */
   async connect() {
     const sk = getShoukaku();
-    const node = getNode();
 
-    this.player = await node.joinChannel({
+    this.player = await sk.joinVoiceChannel({
       guildId: this.guildId,
       channelId: this.voiceChannelId,
       shardId: 0,
@@ -65,7 +73,8 @@ class GuildQueue {
 
     // Track end event
     this.player.on("end", async (data) => {
-      if (data.reason === "replaced") return; // Seek / filter change
+      console.log(`[music] Shoukaku track end event for guild ${this.guildId}: reason=${data.reason}`);
+      if (data.reason === "replaced" || data.reason === "cleanup") return; // Ignore replaced / session cleanup
       await this._handleTrackEnd();
     });
 
@@ -91,6 +100,13 @@ class GuildQueue {
   /** Disconnect from voice and clean up. */
   async disconnect() {
     this._clearIdleTimer();
+    this._clearUpdateInterval();
+    if (this.nowPlayingMessage) {
+      try {
+        await this.nowPlayingMessage.delete();
+      } catch (_) {}
+      this.nowPlayingMessage = null;
+    }
     if (this.player) {
       try {
         const sk = getShoukaku();
@@ -133,6 +149,14 @@ class GuildQueue {
     this.tracks = [];
     this.current = null;
     this.loop = LOOP.OFF;
+    this.skipVotes = new Set();
+    this._clearUpdateInterval();
+    if (this.nowPlayingMessage) {
+      try {
+        await this.nowPlayingMessage.delete();
+      } catch (_) {}
+      this.nowPlayingMessage = null;
+    }
     if (this.player) {
       await this.player.stopTrack();
     }
@@ -149,6 +173,7 @@ class GuildQueue {
     if (!this.player || this.paused) return false;
     await this.player.setPaused(true);
     this.paused = true;
+    this._clearUpdateInterval();
     return true;
   }
 
@@ -157,6 +182,7 @@ class GuildQueue {
     if (!this.player || !this.paused) return false;
     await this.player.setPaused(false);
     this.paused = false;
+    this._startUpdateInterval();
     return true;
   }
 
@@ -270,10 +296,13 @@ class GuildQueue {
   /** Play the next track in the queue. */
   async _playNext() {
     if (!this.player) return;
+    this.skipVotes = new Set();
 
     // Loop track mode — replay current
     if (this.loop === LOOP.TRACK && this.current) {
       await this.player.playTrack({ track: { encoded: this.current.encoded } });
+      await this._sendNowPlaying();
+      this._startUpdateInterval();
       if (this.onTrackStart) this.onTrackStart(this);
       return;
     }
@@ -286,7 +315,28 @@ class GuildQueue {
     const next = this.tracks.shift();
     if (!next) {
       this.current = null;
+      this._clearUpdateInterval();
       if (this.onQueueEnd) this.onQueueEnd(this);
+      
+      // Delete old now playing embed
+      if (this.nowPlayingMessage) {
+        try {
+          await this.nowPlayingMessage.delete();
+        } catch (_) {}
+        this.nowPlayingMessage = null;
+      }
+      
+      // Notify queue end
+      if (discordClient && this.textChannelId) {
+        try {
+          const channel = discordClient.channels.cache.get(this.textChannelId) || 
+                          await discordClient.channels.fetch(this.textChannelId).catch(() => null);
+          if (channel) {
+            await channel.send("⏹️ Queue has ended. Until next time, Master~").catch(() => null);
+          }
+        } catch (_) {}
+      }
+
       if (!this.stay247) {
         this._startIdleTimer();
       }
@@ -295,7 +345,56 @@ class GuildQueue {
 
     this.current = next;
     await this.player.playTrack({ track: { encoded: next.encoded } });
+    await this._sendNowPlaying();
+    this._startUpdateInterval();
     if (this.onTrackStart) this.onTrackStart(this);
+  }
+
+  /** Send or update Now Playing panel. */
+  async _sendNowPlaying() {
+    if (!discordClient || !this.textChannelId || !this.current) return;
+
+    // Delete old message
+    if (this.nowPlayingMessage) {
+      try {
+        await this.nowPlayingMessage.delete();
+      } catch (_) {}
+      this.nowPlayingMessage = null;
+    }
+
+    try {
+      const { buildNowPlaying } = require("./now-playing");
+      const channel = discordClient.channels.cache.get(this.textChannelId) || 
+                      await discordClient.channels.fetch(this.textChannelId).catch(() => null);
+      if (channel) {
+        const payload = buildNowPlaying(this);
+        this.nowPlayingMessage = await channel.send(payload);
+      }
+    } catch (err) {
+      console.error("[music] Error sending now playing message:", err);
+    }
+  }
+
+  /** Start editing the now playing message periodically to move the slider */
+  _startUpdateInterval() {
+    this._clearUpdateInterval();
+    this.updateInterval = setInterval(async () => {
+      if (this.nowPlayingMessage && this.current && !this.paused) {
+        try {
+          const { buildNowPlaying } = require("./now-playing");
+          const payload = buildNowPlaying(this);
+          await this.nowPlayingMessage.edit(payload);
+        } catch (_) {}
+      }
+    }, 5000);
+  }
+
+  /** Clear the periodic update interval */
+  _clearUpdateInterval() {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+      this.updateInterval = null;
+    }
   }
 
   /** Handle the end of a track. */
@@ -380,6 +479,7 @@ module.exports = {
   has,
   remove,
   getAll,
+  setClient,
   GuildQueue,
   LOOP,
   LOOP_LABELS,

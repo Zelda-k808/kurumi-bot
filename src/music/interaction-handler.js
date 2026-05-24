@@ -1,6 +1,6 @@
 /* ───────────── Music Interaction Handler ───────────── */
 
-const { EmbedBuilder } = require("discord.js");
+const { EmbedBuilder, PermissionFlagsBits } = require("discord.js");
 const queueManager = require("./queue-manager");
 const trackResolver = require("./track-resolver");
 const { buildNowPlaying } = require("./now-playing");
@@ -69,7 +69,7 @@ async function handlePlay(interaction) {
   const guildId = interaction.guildId;
 
   try {
-    const { tracks, playlistName, source } = await trackResolver.resolve(query, interaction.user.id);
+    const { tracks, playlistName, source } = await trackResolver.resolve(query, interaction.user.id, interaction.member?.displayName || interaction.user.username);
     if (!tracks.length) {
       return interaction.editReply({ content: "Kukuku… I couldn't find anything for that, Master. Try a different search~" });
     }
@@ -85,20 +85,18 @@ async function handlePlay(interaction) {
     if (playlistName) {
       const embed = new EmbedBuilder()
         .setColor(KURUMI_COLOR)
-        .setDescription(`📋 Queued **${count}** tracks from **${playlistName}**`)
+        .setDescription(`📋 Queued **${count}** tracks from **${playlistName}**, Master~`)
         .setFooter({ text: `Source: ${source}` });
       return interaction.editReply({ embeds: [embed] });
     }
 
     if (count === 1 && q.tracks.length === 0 && q.current === tracks[0]) {
-      // Just started playing — show now playing
-      const np = buildNowPlaying(q);
-      q.nowPlayingMessage = await interaction.editReply(np);
+      return interaction.editReply({ content: `🎶 Now playing **${tracks[0].title}**, Master~` });
     } else {
       const track = tracks[0];
       const embed = new EmbedBuilder()
         .setColor(KURUMI_COLOR)
-        .setDescription(`🎵 Queued **[${track.title}](${track.uri})** — ${trackResolver.formatDuration(track.duration)}`)
+        .setDescription(`🎵 Queued **[${track.title}](${track.uri})** — ${trackResolver.formatDuration(track.duration)}, Master~`)
         .setFooter({ text: `Position #${q.tracks.length} in queue` });
       if (track.artworkUrl) embed.setThumbnail(track.artworkUrl);
       return interaction.editReply({ embeds: [embed] });
@@ -123,12 +121,71 @@ async function handleResume(interaction) {
   return interaction.reply(kurumiMsg("▶️ Resumed, Master."));
 }
 
+/**
+ * Perform skip immediately or register a skip vote based on DJ settings.
+ * @returns {Promise<{ skipped: boolean, voted: boolean, text: string }>}
+ */
+async function performSkipOrVote(interaction, q) {
+  // Check if DJ role is configured
+  let djRoleId = null;
+  if (db) {
+    const settings = await db.getMusicSettings(interaction.guildId);
+    djRoleId = settings?.dj_role_id || null;
+  }
+
+  // If DJ role is configured, enforce vote skip for non-privileged users
+  if (djRoleId) {
+    const isRequester = q.current && q.current.requesterId === interaction.user.id;
+    const isDj = interaction.member?.roles?.cache?.has(djRoleId);
+    const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.ManageGuild) || 
+                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+
+    if (!isRequester && !isDj && !isAdmin) {
+      const vc = interaction.member?.voice?.channel;
+      if (!vc) {
+        return { skipped: false, voted: false, text: "You need to be in a voice channel to vote, Master~" };
+      }
+
+      // Count active listeners (excluding bots)
+      const listeners = vc.members.filter(m => !m.user.bot);
+      const listenerCount = listeners.size;
+      const required = Math.ceil(listenerCount / 2);
+
+      if (!q.skipVotes) {
+        q.skipVotes = new Set();
+      }
+
+      if (q.skipVotes.has(interaction.user.id)) {
+        return { skipped: false, voted: false, text: `Master, you have already voted to skip this song! (${q.skipVotes.size}/${required} votes)` };
+      }
+
+      q.skipVotes.add(interaction.user.id);
+
+      if (q.skipVotes.size >= required) {
+        const title = q.current?.title || "track";
+        await q.skip();
+        return { skipped: true, voted: true, text: `⏭️ Vote threshold met (${q.skipVotes.size}/${required}). Skipping **${title}**, Master~` };
+      } else {
+        return { skipped: false, voted: true, text: `🗳️ Voted to skip! Need **${required - q.skipVotes.size}** more votes (${q.skipVotes.size}/${required}).` };
+      }
+    }
+  }
+
+  // Default / privileged: skip immediately
+  const title = q.current?.title || "track";
+  await q.skip();
+  return { skipped: true, voted: false, text: `⏭️ Skipped **${title}**, Master.` };
+}
+
 async function handleSkip(interaction) {
   const r = requireQueue(interaction.guildId);
   if (!r.ok) return interaction.reply(kurumiMsg(r.text));
-  const skipped = r.queue.current;
-  await r.queue.skip();
-  return interaction.reply({ content: `⏭️ Skipped **${skipped?.title || "track"}**.`, ephemeral: false });
+  
+  const result = await performSkipOrVote(interaction, r.queue);
+  return interaction.reply({ 
+    content: result.text, 
+    ephemeral: !result.skipped && !result.voted 
+  });
 }
 
 async function handleStop(interaction) {
@@ -141,8 +198,17 @@ async function handleStop(interaction) {
 async function handleNowPlaying(interaction) {
   const r = requireQueue(interaction.guildId);
   if (!r.ok) return interaction.reply(kurumiMsg(r.text));
+  
+  // Delete previous message if exists
+  if (r.queue.nowPlayingMessage) {
+    try {
+      await r.queue.nowPlayingMessage.delete();
+    } catch (_) {}
+  }
+  
   const np = buildNowPlaying(r.queue);
-  return interaction.reply(np);
+  await interaction.reply(np);
+  r.queue.nowPlayingMessage = await interaction.fetchReply();
 }
 
 async function handleQueue(interaction) {
@@ -336,7 +402,7 @@ async function handlePlaylist(interaction) {
     let loaded = 0;
     for (const t of tracks) {
       try {
-        const { tracks: resolved } = await trackResolver.resolve(t.uri || t.title, interaction.user.id);
+        const { tracks: resolved } = await trackResolver.resolve(t.uri || t.title, interaction.user.id, interaction.member?.displayName || interaction.user.username);
         if (resolved.length > 0) {
           await q.enqueue([resolved[0]]);
           loaded++;
@@ -467,58 +533,59 @@ async function handleMusicButton(interaction) {
   const id = interaction.customId;
   if (!id.startsWith("music_")) return false;
 
+  // Avoid handling already acknowledged interactions (helps with duplicate triggers or failovers)
+  if (interaction.deferred || interaction.replied) return true;
+
   const q = queueManager.get(interaction.guildId);
   if (!q || !q.current) {
-    await interaction.reply(kurumiMsg("Nothing is playing right now, Master."));
+    try {
+      await interaction.reply(kurumiMsg("Nothing is playing right now, Master."));
+    } catch (_) {}
     return true;
   }
 
+  let shouldUpdateEmbed = true;
   try {
+    await interaction.deferUpdate();
+
     switch (id) {
       case "music_pause":
         await q.togglePause();
-        await interaction.reply(kurumiMsg(q.paused ? "⏸️ Paused." : "▶️ Resumed."));
         break;
 
       case "music_skip": {
-        const skipped = q.current;
-        await q.skip();
-        await interaction.reply({ content: `⏭️ Skipped **${skipped?.title || "track"}**.`, ephemeral: true });
+        const result = await performSkipOrVote(interaction, q);
+        await interaction.followUp({ content: result.text, ephemeral: !result.skipped && !result.voted });
+        if (result.skipped) shouldUpdateEmbed = false;
         break;
       }
 
       case "music_stop":
         await q.stop();
-        await interaction.reply({ content: "⏹️ Stopped.", ephemeral: true });
+        shouldUpdateEmbed = false;
         break;
 
       case "music_shuffle":
         q.shuffle();
-        await interaction.reply({ content: "🔀 Shuffled!", ephemeral: true });
         break;
 
-      case "music_loop": {
-        const mode = q.cycleLoop();
-        await interaction.reply({ content: `🔁 Loop: **${LOOP_LABELS[mode]}**`, ephemeral: true });
+      case "music_loop":
+        q.cycleLoop();
         break;
-      }
 
       default:
-        await interaction.reply(kurumiMsg("Unknown action."));
+        break;
     }
 
-    // Update the now playing message if it exists
-    if (q.nowPlayingMessage && q.current) {
+    if (shouldUpdateEmbed && q.current) {
       try {
         const np = buildNowPlaying(q);
-        await q.nowPlayingMessage.edit(np);
+        await interaction.editReply(np);
+        q.nowPlayingMessage = interaction.message;
       } catch (_) {}
     }
   } catch (err) {
     console.error("[music] Button error:", err);
-    try {
-      await interaction.reply(kurumiMsg("Something went wrong, Master…"));
-    } catch (_) {}
   }
 
   return true;

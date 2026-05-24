@@ -40,7 +40,7 @@ function detectSource(url) {
  * @param {string} requesterId — Discord user ID
  * @returns {object}
  */
-function normalizeTrack(track, requesterId) {
+function normalizeTrack(track, requesterId, requesterName) {
   const info = track.info || {};
   return {
     encoded: track.encoded || track.track,
@@ -52,6 +52,7 @@ function normalizeTrack(track, requesterId) {
     sourceName: info.sourceName || "unknown",
     isStream: info.isStream || false,
     requesterId,
+    requesterName: requesterName || requesterId,
   };
 }
 
@@ -74,61 +75,126 @@ function formatDuration(ms) {
  * Resolve a user query into an array of normalized tracks.
  * @param {string} query — URL or search text
  * @param {string} requesterId — Discord user ID
+ * @param {string} [requesterName] — Discord display name
  * @returns {Promise<{ tracks: object[], playlistName: string|null, source: string }>}
  */
-async function resolve(query, requesterId) {
+async function resolve(query, requesterId, requesterName) {
   const node = getNode();
   const trimmed = query.trim();
 
-  let searchQuery;
-  let source = "search";
-
   if (isUrl(trimmed)) {
-    // Direct URL — let Lavalink handle it
-    searchQuery = trimmed;
-    source = detectSource(trimmed);
-  } else {
-    // Text search — default to YouTube search
-    searchQuery = `ytsearch:${trimmed}`;
-    source = "youtube";
-  }
-
-  const result = await node.rest.resolve(searchQuery);
-
-  if (!result || result.loadType === "empty" || result.loadType === "error") {
-    // Try SoundCloud fallback if YouTube search fails
-    if (!isUrl(trimmed) && !searchQuery.startsWith("scsearch:")) {
-      const scResult = await node.rest.resolve(`scsearch:${trimmed}`);
-      if (scResult && scResult.loadType !== "empty" && scResult.loadType !== "error") {
-        return processResult(scResult, requesterId, "soundcloud");
-      }
+    const source = detectSource(trimmed);
+    const result = await node.rest.resolve(trimmed);
+    if (!result || result.loadType === "empty" || result.loadType === "error") {
+      return { tracks: [], playlistName: null, source };
     }
-    return { tracks: [], playlistName: null, source };
+    return processResult(result, requesterId, requesterName, source, trimmed);
   }
 
-  return processResult(result, requesterId, source);
+  // 1. Try SoundCloud Search
+  let result = await node.rest.resolve(`scsearch:${trimmed}`);
+  if (result && result.loadType !== "empty" && result.loadType !== "error" && result.data && result.data.length > 0) {
+    return processResult(result, requesterId, requesterName, "soundcloud", trimmed);
+  }
+
+  // 2. Fallback: Try Spotify Search
+  console.log(`[music] SoundCloud search empty/error for "${trimmed}" — trying Spotify fallback…`);
+  result = await node.rest.resolve(`spsearch:${trimmed}`);
+  if (result && result.loadType !== "empty" && result.loadType !== "error" && result.data && result.data.length > 0) {
+    return processResult(result, requesterId, requesterName, "spotify", trimmed);
+  }
+
+  // 3. Fallback: Try Apple Music Search
+  console.log(`[music] Spotify search empty/error for "${trimmed}" — trying Apple Music fallback…`);
+  result = await node.rest.resolve(`amsearch:${trimmed}`);
+  if (result && result.loadType !== "empty" && result.loadType !== "error" && result.data && result.data.length > 0) {
+    return processResult(result, requesterId, requesterName, "applemusic", trimmed);
+  }
+
+  // All searches failed
+  return { tracks: [], playlistName: null, source: "search" };
+}
+
+/**
+ * Check if a raw or normalized track is a SoundCloud Go+ preview (unplayable 30s clip).
+ * The encoded (base64) track data embeds the stream URL; preview tracks contain "/preview/hls".
+ */
+function isSoundCloudPreview(track) {
+  try {
+    const encoded = track.encoded || track.track || "";
+    if (!encoded) return false;
+    const decoded = Buffer.from(encoded, "base64").toString("binary");
+    return decoded.includes("/preview/hls") || decoded.includes("/preview/");
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Process a Lavalink resolve result into normalized tracks.
  */
-function processResult(result, requesterId, source) {
+function processResult(result, requesterId, requesterName, source, originalQuery) {
   switch (result.loadType) {
     case "track": {
-      const track = normalizeTrack(result.data, requesterId);
+      const raw = result.data;
+      if (isSoundCloudPreview(raw)) {
+        console.log(`[music] Skipping SoundCloud preview track: ${raw.info?.title || "unknown"}`);
+        return { tracks: [], playlistName: null, source };
+      }
+      const track = normalizeTrack(raw, requesterId, requesterName);
       return { tracks: [track], playlistName: null, source };
     }
 
     case "playlist": {
-      const tracks = (result.data.tracks || []).map((t) => normalizeTrack(t, requesterId));
+      const tracks = (result.data.tracks || [])
+        .filter((t) => {
+          if (isSoundCloudPreview(t)) {
+            console.log(`[music] Filtering out SoundCloud preview: ${t.info?.title || "unknown"}`);
+            return false;
+          }
+          return true;
+        })
+        .map((t) => normalizeTrack(t, requesterId, requesterName));
       const name = result.data.info?.name || result.data.name || null;
       return { tracks, playlistName: name, source };
     }
 
     case "search": {
-      const tracks = (result.data || []).map((t) => normalizeTrack(t, requesterId));
-      // Return only the first result for search
-      return { tracks: tracks.slice(0, 1), playlistName: null, source };
+      // Filter out SoundCloud preview tracks before selection
+      const allRaw = (result.data || []).filter((t) => {
+        if (isSoundCloudPreview(t)) {
+          console.log(`[music] Filtering out SoundCloud preview from search: ${t.info?.title || "unknown"}`);
+          return false;
+        }
+        return true;
+      });
+      const allTracks = allRaw.map((t) => normalizeTrack(t, requesterId, requesterName));
+      if (allTracks.length === 0) {
+        return { tracks: [], playlistName: null, source };
+      }
+
+      const queryLower = (originalQuery || "").toLowerCase();
+      const unwantedKeywords = [
+        "slowed", "reverb", "nightcore", "instrumental", "sped up",
+        "speed up", "remix", "cover", "remake", "acoustic",
+        "tribute", "fanmade", "fan-made", "mashup"
+      ];
+      const userAskedForSpecial = unwantedKeywords.some((word) => queryLower.includes(word));
+
+      let selected = allTracks[0];
+
+      if (!userAskedForSpecial) {
+        // Try to find the first result that doesn't have unwanted keywords in the title
+        const cleanTrack = allTracks.find((track) => {
+          const titleLower = (track.title || "").toLowerCase();
+          return !unwantedKeywords.some((word) => titleLower.includes(word));
+        });
+        if (cleanTrack) {
+          selected = cleanTrack;
+        }
+      }
+
+      return { tracks: [selected], playlistName: null, source };
     }
 
     default:
